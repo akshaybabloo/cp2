@@ -11,3 +11,9 @@ env_logger = "0.11.8"
 indicatif = { version = "0.18.0", features = ["tokio"] }
 log = "0.4.28"
 tokio = { version = "1.47.1", features = ["fs", "rt-multi-thread", "sync", "rt", "macros"] }
+
+[dev-dependencies]
+assert_cmd = "2.0.17"
+predicates = "3.1.3"
+tempfile = "3.22.0"
+walkdir = "2.5.0"

@@ -5,7 +5,8 @@ use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
-use std::{sync::Arc, thread};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use tokio::{fs, sync::Semaphore};
 
 #[derive(Parser, Debug)]
@@ -124,6 +125,7 @@ pub async fn run() {
     };
 
     let semaphore = Arc::new(Semaphore::new(parallel));
+    let has_failed = Arc::new(Mutex::new(false));
     let mut tasks = Vec::new();
 
     for source_str in args.source {
@@ -131,12 +133,14 @@ pub async fn run() {
         let recursive = args.recursive;
         let sem = Arc::clone(&semaphore);
         let pb_clone = pb.as_ref().map(Arc::clone);
+        let has_failed_clone = Arc::clone(&has_failed);
 
         tasks.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("failed to acquire semaphore permit");
             let source = Path::new(&source_str);
             if !source.exists() {
                 log::error!("Source path does not exist: {}", source_str);
+                *has_failed_clone.lock().unwrap() = true;
                 return;
             }
             if source.is_dir() && !recursive {
@@ -144,6 +148,7 @@ pub async fn run() {
                     "Source path is a directory, but recursive flag is not set: {}",
                     source_str
                 );
+                *has_failed_clone.lock().unwrap() = true;
                 return;
             }
 
@@ -163,6 +168,7 @@ pub async fn run() {
                     }
                     Err(e) => {
                         eprintln!("Error copying file: {}", e);
+                        *has_failed_clone.lock().unwrap() = true;
                     }
                 }
             } else if source.is_dir() {
@@ -170,6 +176,7 @@ pub async fn run() {
                 let dest_path = destination.join(dir_name);
                 if let Err(e) = copy_dir_recursive(source, &dest_path, pb_clone.as_deref()).await {
                     eprintln!("Error copying directory: {}", e);
+                    *has_failed_clone.lock().unwrap() = true;
                 }
             }
         }));
@@ -181,5 +188,9 @@ pub async fn run() {
 
     if let Some(pb) = pb {
         pb.finish_with_message("Copy complete!");
+    }
+
+    if *has_failed.lock().unwrap() {
+        std::process::exit(1);
     }
 }
