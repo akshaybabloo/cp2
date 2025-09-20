@@ -1,7 +1,9 @@
 use crate::copy::copy_dir_recursive;
+use crate::utils::get_copy_size;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::{sync::Arc, thread};
 use tokio::{fs, sync::Semaphore};
@@ -59,6 +61,8 @@ pub async fn run() {
     let parallel = args.parallel.min(max);
     log::debug!("Using parallel level: {}", parallel);
 
+    let is_quiet = args.verbosity.log_level().is_none();
+
     env_logger::Builder::new().filter_level(args.verbosity.into()).init();
 
     let destination = Path::new(&args.destination);
@@ -66,7 +70,7 @@ pub async fn run() {
         log::debug!("Destination path does not exist: {}", args.destination);
         println!(
             "{} {}",
-            "Destination path does not exist: {}".red(),
+            "Destination path does not exist: ".red(),
             args.destination.red()
         );
         std::process::exit(1);
@@ -75,11 +79,49 @@ pub async fn run() {
         log::debug!("Destination path is not a directory: {}", args.destination);
         println!(
             "{} {}",
-            "Destination path is not a directory: {}".red(),
+            "Destination path is not a directory: ".red(),
             args.destination.red()
         );
         std::process::exit(1);
     }
+
+    let pb = if !is_quiet {
+        let mut total_files: u64 = 0;
+        let mut total_size: u64 = 0;
+
+        for source_str in &args.source {
+            let source = Path::new(source_str);
+            if !source.exists() {
+                log::warn!("Source path does not exist: {}", source_str);
+                continue;
+            }
+            if source.is_dir() && !args.recursive {
+                log::warn!(
+                    "Source path is a directory, but recursive flag is not set: {}",
+                    source_str
+                );
+                continue;
+            }
+            let (files, size) = get_copy_size(source).await;
+            total_files += files;
+            total_size += size;
+        }
+
+        log::info!("Total files to copy: {}, total size: {}", total_files, total_size);
+        let pb = ProgressBar::new(total_size);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb.set_message("Copying...");
+        Some(Arc::new(pb))
+    } else {
+        None
+    };
 
     let semaphore = Arc::new(Semaphore::new(parallel));
     let mut tasks = Vec::new();
@@ -88,6 +130,7 @@ pub async fn run() {
         let destination = destination.to_path_buf();
         let recursive = args.recursive;
         let sem = Arc::clone(&semaphore);
+        let pb_clone = pb.as_ref().map(Arc::clone);
 
         tasks.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("failed to acquire semaphore permit");
@@ -107,10 +150,16 @@ pub async fn run() {
             if source.is_file() {
                 let file_name = source.file_name().unwrap_or_else(|| std::ffi::OsStr::new(&source_str));
                 let dest_path = destination.join(file_name);
-                log::info!("Copying file: {} to {}", source_str, dest_path.display());
+                let file_size = if pb_clone.is_some() {
+                    fs::metadata(source).await.map(|m| m.len()).unwrap_or(0)
+                } else {
+                    0
+                };
                 match fs::copy(source, &dest_path).await {
-                    Ok(bytes_copied) => {
-                        println!("File copied successfully! Copied {} bytes.", bytes_copied);
+                    Ok(_) => {
+                        if let Some(pb) = pb_clone {
+                            pb.inc(file_size);
+                        }
                     }
                     Err(e) => {
                         eprintln!("Error copying file: {}", e);
@@ -119,8 +168,7 @@ pub async fn run() {
             } else if source.is_dir() {
                 let dir_name = source.file_name().unwrap_or_else(|| std::ffi::OsStr::new(&source_str));
                 let dest_path = destination.join(dir_name);
-                log::info!("Copying directory: {} to {}", source_str, dest_path.display());
-                if let Err(e) = copy_dir_recursive(source, &dest_path).await {
+                if let Err(e) = copy_dir_recursive(source, &dest_path, pb_clone.as_deref()).await {
                     eprintln!("Error copying directory: {}", e);
                 }
             }
@@ -131,8 +179,7 @@ pub async fn run() {
         task.await.expect("copy task failed");
     }
 
-    // TODO: Use progress bar with indicatif crate
-
-    // log::debug!("{:#?}", args.force);
-    // log::debug!("Parallel level: {}", parallel);
+    if let Some(pb) = pb {
+        pb.finish_with_message("Copy complete!");
+    }
 }

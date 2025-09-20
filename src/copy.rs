@@ -1,7 +1,8 @@
+use indicatif::ProgressBar;
 use std::path::{Component, Path, PathBuf};
 use tokio::fs;
 
-/// Helper function to normalize a path, resolving `.` and `..` components.
+// Helper function to normalize a path, resolving `.` and `..` components.
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components = path.components().peekable();
     let mut ret = if let Some(c @ Component::RootDir) = components.peek().cloned() {
@@ -26,8 +27,11 @@ fn normalize_path(path: &Path) -> PathBuf {
     ret
 }
 
-/// Recursively copy a directory from `from` to `to`.
-pub async fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn copy_dir_recursive(
+    from: &Path,
+    to: &Path,
+    pb: Option<&ProgressBar>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let from_normalized = normalize_path(&cwd.join(from));
     let to_normalized = normalize_path(&cwd.join(to));
@@ -48,10 +52,18 @@ pub async fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), Box<dyn st
 
         if entry.file_type().await?.is_dir() {
             // Recursively copy subdirectories
-            Box::pin(copy_dir_recursive(&entry_path, &dest_path)).await?;
+            Box::pin(copy_dir_recursive(&entry_path, &dest_path, pb)).await?;
         } else {
             // Copy files
+            let file_size = if pb.is_some() {
+                fs::metadata(&entry_path).await?.len()
+            } else {
+                0
+            };
             fs::copy(&entry_path, &dest_path).await?;
+            if let Some(pb) = pb {
+                pb.inc(file_size);
+            }
         }
     }
     Ok(())

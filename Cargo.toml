@@ -1,6 +1,6 @@
 [package]
 name = "cp2"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 
 [dependencies]
@@ -8,5 +8,6 @@ clap = { version = "4.5.48", features = ["derive"] }
 clap-verbosity-flag = "3.0.4"
 colored = { version = "3.0.0", features = ["no-color"] }
 env_logger = "0.11.8"
+indicatif = { version = "0.18.0", features = ["tokio"] }
 log = "0.4.28"
 tokio = { version = "1.47.1", features = ["fs", "rt-multi-thread", "sync", "rt", "macros"] }
