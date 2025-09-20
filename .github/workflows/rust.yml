@@ -3,11 +3,11 @@ name: Rust
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
   release:
-    types: [ published ]
+    types: [published]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,10 +20,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
       - run: rustup override set 1.90.0
+
       - name: Build
         run: cargo build
+
       - name: Run tests
         run: cargo test
 
@@ -33,9 +36,17 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install MinGW
+        run: sudo apt-get install gcc-mingw-w64
+
       - uses: mlugg/setup-zig@v2
+
       - run: rustup override set 1.90.0
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
