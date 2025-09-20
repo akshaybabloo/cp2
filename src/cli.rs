@@ -24,9 +24,9 @@ struct Args {
     #[arg(short, long, default_value_t = false)]
     recursive: bool,
 
-    /// Overwrite existing files without prompt
-    #[arg(short, long, default_value_t = false)]
-    force: bool,
+    // /// Overwrite existing files without prompt
+    // #[arg(short, long, default_value_t = false)]
+    // force: bool,
 
     /// Interactive mode
     #[arg(short, long, default_value_t = false)]
@@ -39,9 +39,9 @@ struct Args {
     #[command(flatten)]
     verbosity: Verbosity,
 
-    /// Check copied files for integrity
-    #[arg(short, long, default_value_t = false)]
-    check: bool,
+    // /// Check copied files for integrity
+    // #[arg(short, long, default_value_t = false)]
+    // check: bool,
 }
 
 impl Args {
