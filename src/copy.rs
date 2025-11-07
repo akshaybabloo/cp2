@@ -1,6 +1,39 @@
 use indicatif::ProgressBar;
 use std::path::{Component, Path, PathBuf};
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+// Copy a file in chunks to allow progress updates
+pub async fn copy_file_with_progress(
+    from: &Path,
+    to: &Path,
+    pb: Option<&ProgressBar>,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8MB chunks
+    
+    let mut source = fs::File::open(from).await?;
+    let mut dest = fs::File::create(to).await?;
+    
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+    let mut total_bytes = 0u64;
+    
+    loop {
+        let bytes_read = source.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            break;
+        }
+        
+        dest.write_all(&buffer[..bytes_read]).await?;
+        total_bytes += bytes_read as u64;
+        
+        if let Some(pb) = pb {
+            pb.inc(bytes_read as u64);
+        }
+    }
+    
+    dest.flush().await?;
+    Ok(total_bytes)
+}
 
 // Helper function to normalize a path, resolving `.` and `..` components.
 fn normalize_path(path: &Path) -> PathBuf {
@@ -54,16 +87,8 @@ pub async fn copy_dir_recursive(
             // Recursively copy subdirectories
             Box::pin(copy_dir_recursive(&entry_path, &dest_path, pb)).await?;
         } else {
-            // Copy files
-            let file_size = if pb.is_some() {
-                fs::metadata(&entry_path).await?.len()
-            } else {
-                0
-            };
-            fs::copy(&entry_path, &dest_path).await?;
-            if let Some(pb) = pb {
-                pb.inc(file_size);
-            }
+            // Copy files with progress tracking
+            copy_file_with_progress(&entry_path, &dest_path, pb).await?;
         }
     }
     Ok(())

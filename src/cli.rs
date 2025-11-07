@@ -1,4 +1,4 @@
-use crate::copy::copy_dir_recursive;
+use crate::copy::{copy_dir_recursive, copy_file_with_progress};
 use crate::utils::get_copy_size;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use clap_verbosity_flag::Verbosity;
@@ -7,7 +7,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tokio::{fs, sync::Semaphore};
+use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about=None)]
@@ -155,17 +155,8 @@ pub async fn run() {
             if source.is_file() {
                 let file_name = source.file_name().unwrap_or_else(|| std::ffi::OsStr::new(&source_str));
                 let dest_path = destination.join(file_name);
-                let file_size = if pb_clone.is_some() {
-                    fs::metadata(source).await.map(|m| m.len()).unwrap_or(0)
-                } else {
-                    0
-                };
-                match fs::copy(source, &dest_path).await {
-                    Ok(_) => {
-                        if let Some(pb) = pb_clone {
-                            pb.inc(file_size);
-                        }
-                    }
+                match copy_file_with_progress(source, &dest_path, pb_clone.as_deref()).await {
+                    Ok(_) => {}
                     Err(e) => {
                         eprintln!("Error copying file: {}", e);
                         *has_failed_clone.lock().unwrap() = true;
