@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - run: rustup override set 1.90.0
+      - run: rustup override set 1.91.0
 
       - name: Build
         run: cargo build
@@ -45,7 +45,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
 
-      - run: rustup override set 1.90.0
+      - run: rustup override set 1.91.0
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
