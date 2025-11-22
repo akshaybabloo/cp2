@@ -159,6 +159,7 @@ pub async fn run() {
                 .progress_chars("=>-"),
         );
         main_pb.set_message("Overall progress");
+        main_pb.enable_steady_tick(std::time::Duration::from_millis(100));
         
         (Some(Arc::new(multi)), Some(Arc::new(main_pb)))
     } else {
@@ -216,6 +217,7 @@ pub async fn run() {
                         .progress_chars("=>-"),
                 );
                 pb.set_message(format!("Copying {}", file_name));
+                pb.enable_steady_tick(std::time::Duration::from_millis(100));
                 Some(pb)
             } else {
                 None
