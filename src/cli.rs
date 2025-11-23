@@ -1,5 +1,5 @@
 use crate::copy::copy_dir_recursive;
-use crate::utils::get_copy_size;
+use crate::utils::{get_copy_size, trim_filename};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
@@ -218,7 +218,8 @@ pub async fn run() {
                         .unwrap()
                         .progress_chars("=>-"),
                 );
-                pb.set_message(format!("Copying {}", file_name));
+                let display_name = trim_filename(file_name, 28);
+                pb.set_message(format!("Copying {}", display_name));
                 pb.enable_steady_tick(std::time::Duration::from_millis(100));
                 Some(pb)
             } else {
