@@ -31,7 +31,9 @@ pub async fn copy_file_with_progress(
         }
     }
     
+    // Ensure all data is flushed to the OS and synced to disk
     dest.flush().await?;
+    dest.sync_all().await?;
     Ok(total_bytes)
 }
 
