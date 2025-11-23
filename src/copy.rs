@@ -3,35 +3,90 @@ use std::path::{Component, Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8MB chunks
+const SYNC_INTERVAL: usize = 64 * 1024 * 1024; // Sync every 64MB
+
 // Copy a file in chunks to allow progress updates
 pub async fn copy_file_with_progress(
     from: &Path,
     to: &Path,
     pb: Option<&ProgressBar>,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8MB chunks
-    
     let mut source = fs::File::open(from).await?;
     let mut dest = fs::File::create(to).await?;
-    
+
     let mut buffer = vec![0u8; BUFFER_SIZE];
     let mut total_bytes = 0u64;
-    
+    let mut bytes_since_sync = 0usize;
+
     loop {
         let bytes_read = source.read(&mut buffer).await?;
         if bytes_read == 0 {
             break;
         }
-        
+
         dest.write_all(&buffer[..bytes_read]).await?;
+        bytes_since_sync += bytes_read;
+
+        // Periodically sync to disk to ensure progress bar reflects actual writes
+        if bytes_since_sync >= SYNC_INTERVAL {
+            dest.sync_data().await?;
+            bytes_since_sync = 0;
+        }
+
         total_bytes += bytes_read as u64;
-        
+
         if let Some(pb) = pb {
             pb.inc(bytes_read as u64);
         }
     }
-    
-    // Ensure all data is flushed to the OS and synced to disk
+
+    // Ensure all remaining data is flushed to the OS and synced to disk
+    dest.flush().await?;
+    dest.sync_all().await?;
+    Ok(total_bytes)
+}
+
+// Copy a file with dual progress bars (file + main)
+pub async fn copy_file_with_dual_progress(
+    from: &Path,
+    to: &Path,
+    file_pb: Option<&ProgressBar>,
+    main_pb: Option<&ProgressBar>,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut source = fs::File::open(from).await?;
+    let mut dest = fs::File::create(to).await?;
+
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+    let mut total_bytes = 0u64;
+    let mut bytes_since_sync = 0usize;
+
+    loop {
+        let bytes_read = source.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        dest.write_all(&buffer[..bytes_read]).await?;
+        bytes_since_sync += bytes_read;
+
+        // Periodically sync to disk to ensure progress bar reflects actual writes
+        if bytes_since_sync >= SYNC_INTERVAL {
+            dest.sync_data().await?;
+            bytes_since_sync = 0;
+        }
+
+        total_bytes += bytes_read as u64;
+
+        if let Some(pb) = file_pb {
+            pb.inc(bytes_read as u64);
+        }
+        if let Some(pb) = main_pb {
+            pb.inc(bytes_read as u64);
+        }
+    }
+
+    // Ensure all remaining data is flushed to the OS and synced to disk
     dest.flush().await?;
     dest.sync_all().await?;
     Ok(total_bytes)
