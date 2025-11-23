@@ -6,25 +6,20 @@ pub fn trim_filename(name: &str, max_len: usize) -> String {
     if name.len() <= max_len {
         return name.to_string();
     }
-    
+
     // If the name is too long, show start and end with ellipsis in the middle
     let ellipsis = "...";
     let ellipsis_len = ellipsis.len();
-    
+
     if max_len <= ellipsis_len {
         return ellipsis.to_string();
     }
-    
+
     let remaining = max_len - ellipsis_len;
     let start_len = (remaining + 1) / 2;
     let end_len = remaining / 2;
-    
-    format!(
-        "{}{}{}",
-        &name[..start_len],
-        ellipsis,
-        &name[name.len() - end_len..]
-    )
+
+    format!("{}{}{}", &name[..start_len], ellipsis, &name[name.len() - end_len..])
 }
 
 /// Recursively calculates the total number of files and their cumulative size in bytes

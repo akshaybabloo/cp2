@@ -1,4 +1,4 @@
-use crate::copy::copy_dir_recursive;
+use crate::copy::{copy_dir_recursive, copy_file_with_dual_progress};
 use crate::utils::{get_copy_size, trim_filename};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use clap_verbosity_flag::Verbosity;
@@ -7,8 +7,6 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
@@ -29,7 +27,6 @@ struct Args {
     // /// Overwrite existing files without prompt
     // #[arg(short, long, default_value_t = false)]
     // force: bool,
-
     /// Interactive mode
     #[arg(short, long, default_value_t = false)]
     interactive: bool,
@@ -40,7 +37,6 @@ struct Args {
 
     #[command(flatten)]
     verbosity: Verbosity,
-
     // /// Check copied files for integrity
     // #[arg(short, long, default_value_t = false)]
     // check: bool,
@@ -52,44 +48,6 @@ impl Args {
         let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         Args::command().mut_arg("parallel", move |arg| arg.help(format!("Parallel level (max: {max})")))
     }
-}
-
-// Helper function to copy a file with dual progress bars (file + main)
-async fn copy_file_with_dual_progress(
-    from: &Path,
-    to: &Path,
-    file_pb: Option<&ProgressBar>,
-    main_pb: Option<&ProgressBar>,
-) -> Result<u64, Box<dyn std::error::Error>> {
-    const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8MB chunks
-    
-    let mut source = fs::File::open(from).await?;
-    let mut dest = fs::File::create(to).await?;
-    
-    let mut buffer = vec![0u8; BUFFER_SIZE];
-    let mut total_bytes = 0u64;
-    
-    loop {
-        let bytes_read = source.read(&mut buffer).await?;
-        if bytes_read == 0 {
-            break;
-        }
-        
-        dest.write_all(&buffer[..bytes_read]).await?;
-        total_bytes += bytes_read as u64;
-        
-        if let Some(pb) = file_pb {
-            pb.inc(bytes_read as u64);
-        }
-        if let Some(pb) = main_pb {
-            pb.inc(bytes_read as u64);
-        }
-    }
-    
-    // Ensure all data is flushed to the OS and synced to disk
-    dest.flush().await?;
-    dest.sync_all().await?;
-    Ok(total_bytes)
 }
 
 pub async fn run() {
@@ -149,20 +107,18 @@ pub async fn run() {
         }
 
         log::info!("Total files to copy: {}, total size: {}", total_files, total_size);
-        
+
         let multi = MultiProgress::new();
         let main_pb = multi.add(ProgressBar::new(total_size));
         main_pb.set_style(
             ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
-                )
+                .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
                 .unwrap()
                 .progress_chars("=>-"),
         );
         main_pb.set_message("Overall progress");
         main_pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        
+
         (Some(Arc::new(multi)), Some(Arc::new(main_pb)))
     } else {
         (None, None)
@@ -199,22 +155,18 @@ pub async fn run() {
 
             // Create individual progress bar for this file/directory
             let file_pb = if let Some(ref multi) = multi_clone {
-                let file_name = source.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&source_str);
-                
+                let file_name = source.file_name().and_then(|n| n.to_str()).unwrap_or(&source_str);
+
                 let file_size = if source.is_file() {
                     tokio::fs::metadata(source).await.map(|m| m.len()).unwrap_or(0)
                 } else {
                     0 // For directories, we'll update size as we go
                 };
-                
+
                 let pb = multi.add(ProgressBar::new(file_size));
                 pb.set_style(
                     ProgressStyle::default_bar()
-                        .template(
-                            "  {spinner:.green} {msg:<30} [{wide_bar:.yellow/blue}] {bytes}/{total_bytes}",
-                        )
+                        .template("  {spinner:.green} {msg:<30} [{wide_bar:.yellow/blue}] {bytes}/{total_bytes}")
                         .unwrap()
                         .progress_chars("=>-"),
                 );
@@ -229,13 +181,9 @@ pub async fn run() {
             if source.is_file() {
                 let file_name = source.file_name().unwrap_or_else(|| std::ffi::OsStr::new(&source_str));
                 let dest_path = destination.join(file_name);
-                
-                match copy_file_with_dual_progress(
-                    source, 
-                    &dest_path, 
-                    file_pb.as_ref(),
-                    main_pb_clone.as_deref()
-                ).await {
+
+                match copy_file_with_dual_progress(source, &dest_path, file_pb.as_ref(), main_pb_clone.as_deref()).await
+                {
                     Ok(_) => {
                         if let Some(ref pb) = file_pb {
                             pb.finish_and_clear();
@@ -252,7 +200,7 @@ pub async fn run() {
             } else if source.is_dir() {
                 let dir_name = source.file_name().unwrap_or_else(|| std::ffi::OsStr::new(&source_str));
                 let dest_path = destination.join(dir_name);
-                
+
                 match copy_dir_recursive(source, &dest_path, main_pb_clone.as_deref()).await {
                     Ok(_) => {
                         if let Some(ref pb) = file_pb {
