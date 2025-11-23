@@ -24,9 +24,6 @@ struct Args {
     #[arg(short, long, default_value_t = false)]
     recursive: bool,
 
-    // /// Overwrite existing files without prompt
-    // #[arg(short, long, default_value_t = false)]
-    // force: bool,
     /// Interactive mode
     #[arg(short, long, default_value_t = false)]
     interactive: bool,
@@ -35,11 +32,12 @@ struct Args {
     #[arg(short, long, default_value_t = 4)]
     parallel: usize,
 
+    /// Quiet mode (suppress output)
+    #[arg(short, long, default_value_t = false)]
+    quiet: bool,
+
     #[command(flatten)]
     verbosity: Verbosity,
-    // /// Check copied files for integrity
-    // #[arg(short, long, default_value_t = false)]
-    // check: bool,
 }
 
 impl Args {
@@ -60,7 +58,7 @@ pub async fn run() {
     let parallel = args.parallel.min(max);
     log::debug!("Using parallel level: {}", parallel);
 
-    let is_quiet = args.verbosity.log_level().is_none();
+    let is_quiet = args.quiet || args.verbosity.log_level().is_none();
 
     env_logger::Builder::new().filter_level(args.verbosity.into()).init();
 
