@@ -1,91 +1,122 @@
 name: Rust
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
-    tags:
-      - "*.*.*"
-  release:
-    types: [published]
+    branches: ["main"]
+    tags: ["v*", "*.*.*"]
   pull_request:
-    branches: [main]
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_VERSION: 1.93.0
+    branches: ["main"]
+  release:
+    types:
+      - created
 
 permissions:
   contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_CHANNEL: stable
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+
     strategy:
-      fail-fast: true
       matrix:
         include:
           - os: ubuntu-latest
-          - os: windows-latest
-          - os: macos-latest
+            name: Linux AMD64
+            target: x86_64-unknown-linux-gnu
+            artifact_name: cp2
+            asset_name: cp2-linux-amd64
+            archive_ext: tar.gz
           - os: ubuntu-24.04-arm
+            name: Linux ARM64
+            target: aarch64-unknown-linux-gnu
+            artifact_name: cp2
+            asset_name: cp2-linux-arm64
+            archive_ext: tar.gz
+          - os: windows-latest
+            name: Windows AMD64
+            target: x86_64-pc-windows-msvc
+            artifact_name: cp2.exe
+            asset_name: cp2-windows-amd64
+            archive_ext: zip
+          - os: windows-11-arm
+            name: Windows ARM64
+            target: aarch64-pc-windows-msvc
+            artifact_name: cp2.exe
+            asset_name: cp2-windows-arm64
+            archive_ext: zip
+          - os: macos-latest
+            name: MacOS ARM64
+            target: aarch64-apple-darwin
+            artifact_name: cp2
+            asset_name: cp2-macos-arm64
+            archive_ext: tar.gz
 
     steps:
       - uses: actions/checkout@v6
 
-      - run: rustup override set ${{ env.RUST_VERSION }}
-
-      - name: Build
-        run: cargo build
+      - name: Install Rust toolchain
+        run: |
+          rustup update --no-self-update ${{ env.RUST_CHANNEL }}
+          rustup component add --toolchain ${{ env.RUST_CHANNEL }} rustfmt rust-src
+          rustup target add ${{ matrix.target }}
+          rustup default ${{ env.RUST_CHANNEL }}
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --target ${{ matrix.target }}
 
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - run: rustup override set ${{ env.RUST_VERSION }}
-
-      - name: Set up cross compilation
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Build release binaries
+      - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package binaries
-        shell: bash
+      - name: Package release (Unix)
+        if: matrix.archive_ext == 'tar.gz'
         run: |
-          cd target/${{ matrix.target }}/release
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../../../cp2-${{ matrix.target }}.zip cp2.exe
-          else
-            tar czf ../../../cp2-${{ matrix.target }}.tar.gz cp2
-          fi
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} package/
+          cp README.md LICENSE package/
+          cd package
+          tar -czf ../${{ matrix.asset_name }}.tar.gz *
 
-      - name: Upload to GitHub Release
+      - name: Package release (Windows)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.artifact_name }} package/
+          Copy-Item README.md, LICENSE package/
+          Compress-Archive -Path package/* -DestinationPath ${{ matrix.asset_name }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.asset_name }}.${{ matrix.archive_ext }}
+          path: ${{ matrix.asset_name }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+  upload-release-assets:
+    needs: build
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'release' && github.event.action == 'created') || github.ref_type == 'tag'
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v7
+        with:
+          pattern: cp2-*
+          merge-multiple: true
+          path: ./artifacts
+
+      - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            cp2-${{ matrix.target }}.tar.gz
-            cp2-${{ matrix.target }}.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: ./artifacts/*
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
