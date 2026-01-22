@@ -80,23 +80,44 @@ pub async fn run() {
         std::process::exit(1);
     }
 
+    // Validate all sources upfront before showing progress bars
+    let mut valid_sources = Vec::new();
+    let mut has_errors = false;
+
+    for source_str in &args.source {
+        let source = Path::new(source_str);
+        if !source.exists() {
+            eprintln!(
+                "{} {}",
+                "Source path does not exist:".red(),
+                source_str.red()
+            );
+            has_errors = true;
+            continue;
+        }
+        if source.is_dir() && !args.recursive {
+            eprintln!(
+                "{} {}",
+                "Source path is a directory, but recursive flag is not set:".red(),
+                source_str.red()
+            );
+            has_errors = true;
+            continue;
+        }
+        valid_sources.push(source_str.clone());
+    }
+
+    // Exit if no valid sources remain
+    if valid_sources.is_empty() {
+        std::process::exit(1);
+    }
+
     let (multi_progress, main_pb) = if !is_quiet {
         let mut total_files: u64 = 0;
         let mut total_size: u64 = 0;
 
-        for source_str in &args.source {
+        for source_str in &valid_sources {
             let source = Path::new(source_str);
-            if !source.exists() {
-                log::warn!("Source path does not exist: {}", source_str);
-                continue;
-            }
-            if source.is_dir() && !args.recursive {
-                log::warn!(
-                    "Source path is a directory, but recursive flag is not set: {}",
-                    source_str
-                );
-                continue;
-            }
             let (files, size) = get_copy_size(source).await;
             total_files += files;
             total_size += size;
@@ -121,12 +142,11 @@ pub async fn run() {
     };
 
     let semaphore = Arc::new(Semaphore::new(parallel));
-    let has_failed = Arc::new(Mutex::new(false));
+    let has_failed = Arc::new(Mutex::new(has_errors));
     let mut tasks = Vec::new();
 
-    for source_str in args.source {
+    for source_str in valid_sources {
         let destination = destination.to_path_buf();
-        let recursive = args.recursive;
         let sem = Arc::clone(&semaphore);
         let multi_clone = multi_progress.as_ref().map(Arc::clone);
         let main_pb_clone = main_pb.as_ref().map(Arc::clone);
@@ -135,19 +155,6 @@ pub async fn run() {
         tasks.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("failed to acquire semaphore permit");
             let source = Path::new(&source_str);
-            if !source.exists() {
-                log::error!("Source path does not exist: {}", source_str);
-                *has_failed_clone.lock().unwrap() = true;
-                return;
-            }
-            if source.is_dir() && !recursive {
-                log::error!(
-                    "Source path is a directory, but recursive flag is not set: {}",
-                    source_str
-                );
-                *has_failed_clone.lock().unwrap() = true;
-                return;
-            }
 
             // Create individual progress bar for this file/directory
             let file_pb = if let Some(ref multi) = multi_clone {
