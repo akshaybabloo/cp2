@@ -124,6 +124,7 @@ pub async fn run() {
         match collect_copy_entries(source, destination).await {
             Ok((entries, dirs, _count, size)) => {
                 // Check for duplicate destination paths before extending
+                let mut source_has_dup = false;
                 for entry in &entries {
                     if !dest_paths.insert(entry.to.clone()) {
                         eprintln!(
@@ -133,9 +134,10 @@ pub async fn run() {
                             entry.to.display().to_string().red()
                         );
                         has_errors = true;
+                        source_has_dup = true;
                     }
                 }
-                if has_errors {
+                if source_has_dup {
                     continue;
                 }
                 all_entries.extend(entries);

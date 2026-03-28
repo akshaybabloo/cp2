@@ -40,7 +40,9 @@ pub async fn collect_copy_entries(
     let mut total_count = 0u64;
     let mut total_size = 0u64;
 
-    if source.is_file() {
+    let source_meta = fs::symlink_metadata(source).await?;
+
+    if source_meta.file_type().is_file() {
         let file_name = source.file_name().ok_or("source has no file name")?;
         let dest = dest_base.join(file_name);
 
@@ -57,7 +59,7 @@ pub async fn collect_copy_entries(
             }
         }
 
-        let size = fs::metadata(source).await.map(|m| m.len()).unwrap_or(0);
+        let size = source_meta.len();
         entries.push(CopyEntry {
             from: source.to_path_buf(),
             to: dest,
@@ -66,7 +68,7 @@ pub async fn collect_copy_entries(
         return Ok((entries, dirs, 1, size));
     }
 
-    if source.is_dir() {
+    if source_meta.file_type().is_dir() {
         let dir_name = source.file_name().ok_or("source has no file name")?;
         let dest_dir = dest_base.join(dir_name);
 
@@ -76,8 +78,13 @@ pub async fn collect_copy_entries(
         let src_canon = fs::canonicalize(source).await?;
         let dest_base_canon = fs::canonicalize(dest_base).await?;
         let dest_canon = dest_base_canon.join(dir_name);
-        if dest_canon.starts_with(&src_canon) && dest_canon != src_canon {
-            return Err("cannot copy a directory into itself".into());
+        if dest_canon.starts_with(&src_canon) {
+            return Err(if dest_canon == src_canon {
+                "source and destination are the same directory"
+            } else {
+                "cannot copy a directory into itself"
+            }
+            .into());
         }
 
         dirs.push(dest_dir.clone());
@@ -104,6 +111,12 @@ pub async fn collect_copy_entries(
             }
             // Symlinks and other special file types are skipped
         }
+    } else {
+        return Err(format!(
+            "source is not a regular file or directory: {}",
+            source.display()
+        )
+        .into());
     }
 
     Ok((entries, dirs, total_count, total_size))
