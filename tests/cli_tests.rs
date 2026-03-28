@@ -1,4 +1,5 @@
-use assert_cmd::prelude::*;
+use assert_cmd::assert::OutputAssertExt;
+use assert_cmd::cargo::cargo_bin;
 use predicates::prelude::*;
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -60,7 +61,7 @@ fn test_copy_single_file_succeeds() {
     let file_to_copy = source_path.join("file.txt");
     File::create(&file_to_copy).unwrap().write_all(b"content").unwrap();
 
-    let mut cmd = Command::cargo_bin("cp2").unwrap();
+    let mut cmd = Command::new(cargo_bin!("cp2"));
     cmd.arg(file_to_copy).arg(&dest_path);
 
     cmd.assert().success();
@@ -78,7 +79,7 @@ fn test_copy_dir_without_recursive_flag_fails() {
     let dest_path = tmp_dir.path().join("dest");
     fs::create_dir(&dest_path).unwrap();
 
-    let mut cmd = Command::cargo_bin("cp2").unwrap();
+    let mut cmd = Command::new(cargo_bin!("cp2"));
     cmd.arg(&source_path).arg(&dest_path);
 
     cmd.assert().failure().stderr(predicate::str::contains(
@@ -94,7 +95,7 @@ fn test_copy_dir_with_recursive_flag_succeeds() {
 
     let source_path = create_test_src(&tmp_dir, &[("f1.txt", b"1"), ("sub/f2.txt", b"2")]);
 
-    let mut cmd = Command::cargo_bin("cp2").unwrap();
+    let mut cmd = Command::new(cargo_bin!("cp2"));
     cmd.arg("-r").arg(&source_path).arg(&dest_path);
 
     cmd.assert().success();
@@ -109,7 +110,7 @@ fn test_non_existent_source_fails() {
     let dest_path = tmp_dir.path().join("dest");
     fs::create_dir(&dest_path).unwrap();
 
-    let mut cmd = Command::cargo_bin("cp2").unwrap();
+    let mut cmd = Command::new(cargo_bin!("cp2"));
     cmd.arg("non-existent-file").arg(&dest_path);
 
     cmd.assert()
@@ -128,7 +129,7 @@ fn test_quiet_mode_has_no_stdout() {
     let file_to_copy = source_path.join("file.txt");
     File::create(&file_to_copy).unwrap().write_all(b"content").unwrap();
 
-    let mut cmd = Command::cargo_bin("cp2").unwrap();
+    let mut cmd = Command::new(cargo_bin!("cp2"));
     cmd.arg("-q").arg(file_to_copy).arg(&dest_path);
 
     // In quiet mode, there should be no output to stdout (like "File copied successfully!")
