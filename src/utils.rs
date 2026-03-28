@@ -66,6 +66,20 @@ pub async fn collect_copy_entries(
     if source.is_file() {
         let file_name = source.file_name().ok_or("source has no file name")?;
         let dest = dest_base.join(file_name);
+
+        // Reject same-file copies to avoid truncating the source
+        if let (Ok(src_canon), Ok(dst_canon)) =
+            (fs::canonicalize(source).await, fs::canonicalize(&dest).await)
+        {
+            if src_canon == dst_canon {
+                return Err(format!(
+                    "source and destination are the same file: {}",
+                    source.display()
+                )
+                .into());
+            }
+        }
+
         let size = fs::metadata(source).await.map(|m| m.len()).unwrap_or(0);
         entries.push(CopyEntry {
             from: source.to_path_buf(),
@@ -91,24 +105,25 @@ pub async fn collect_copy_entries(
 
         let mut stack = vec![source.to_path_buf()];
         while let Some(p) = stack.pop() {
-            if p.is_dir() {
+            let meta = fs::symlink_metadata(&p).await?;
+            if meta.file_type().is_dir() {
                 if p != source {
                     let relative = p.strip_prefix(source)?;
                     dirs.push(dest_dir.join(relative));
                 }
-                if let Ok(mut dir_entries) = fs::read_dir(&p).await {
-                    while let Ok(Some(entry)) = dir_entries.next_entry().await {
-                        stack.push(entry.path());
-                    }
+                let mut dir_entries = fs::read_dir(&p).await?;
+                while let Some(entry) = dir_entries.next_entry().await? {
+                    stack.push(entry.path());
                 }
-            } else if p.is_file() {
+            } else if meta.file_type().is_file() {
                 let relative = p.strip_prefix(source)?;
                 let dest = dest_dir.join(relative);
-                let size = fs::metadata(&p).await.map(|m| m.len()).unwrap_or(0);
+                let size = meta.len();
                 total_count += 1;
                 total_size += size;
                 entries.push(CopyEntry { from: p, to: dest, size });
             }
+            // Symlinks and other special file types are skipped
         }
     }
 

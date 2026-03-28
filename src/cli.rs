@@ -3,6 +3,7 @@ use crate::utils::{collect_copy_entries, trim_filename, CopyEntry};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
+use std::collections::HashSet;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -116,11 +117,27 @@ pub async fn run() {
     let mut all_entries: Vec<CopyEntry> = Vec::new();
     let mut all_dirs: Vec<std::path::PathBuf> = Vec::new();
     let mut total_size: u64 = 0;
+    let mut dest_paths: HashSet<std::path::PathBuf> = HashSet::new();
 
     for source_str in &valid_sources {
         let source = Path::new(source_str);
         match collect_copy_entries(source, destination).await {
             Ok((entries, dirs, _count, size)) => {
+                // Check for duplicate destination paths before extending
+                for entry in &entries {
+                    if !dest_paths.insert(entry.to.clone()) {
+                        eprintln!(
+                            "{} {} -> {}",
+                            "Duplicate destination path:".red(),
+                            entry.from.display().to_string().red(),
+                            entry.to.display().to_string().red()
+                        );
+                        has_errors = true;
+                    }
+                }
+                if has_errors {
+                    continue;
+                }
                 all_entries.extend(entries);
                 all_dirs.extend(dirs);
                 total_size += size;
@@ -132,7 +149,11 @@ pub async fn run() {
         }
     }
 
-    if all_entries.is_empty() && has_errors {
+    if has_errors {
+        std::process::exit(1);
+    }
+
+    if all_entries.is_empty() {
         std::process::exit(1);
     }
 
