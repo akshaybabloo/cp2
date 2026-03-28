@@ -11,6 +11,7 @@ pub async fn copy_file_with_dual_progress(
     to: &Path,
     file_pb: Option<&ProgressBar>,
     main_pb: Option<&ProgressBar>,
+    sync: bool,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let mut source = fs::File::open(from).await?;
     let mut dest = fs::File::create(to).await?;
@@ -33,6 +34,11 @@ pub async fn copy_file_with_dual_progress(
         if let Some(pb) = main_pb {
             pb.inc(bytes_read as u64);
         }
+    }
+
+    if sync {
+        dest.flush().await?;
+        dest.sync_all().await?;
     }
 
     Ok(total_bytes)

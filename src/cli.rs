@@ -33,6 +33,10 @@ struct Args {
     #[arg(short, long, default_value_t = 4)]
     parallel: usize,
 
+    /// Sync each file to disk after copying (slower, but crash-safe)
+    #[arg(short = 'S', long, default_value_t = false)]
+    sync: bool,
+
     #[command(flatten)]
     verbosity: Verbosity,
 }
@@ -191,6 +195,7 @@ pub async fn run() {
 
     let semaphore = Arc::new(Semaphore::new(parallel));
     let has_failed = Arc::new(Mutex::new(has_errors));
+    let sync = args.sync;
     let mut tasks = Vec::new();
 
     for entry in all_entries {
@@ -227,6 +232,7 @@ pub async fn run() {
                 &entry.to,
                 file_pb.as_ref(),
                 main_pb_clone.as_deref(),
+                sync,
             )
             .await
             {
