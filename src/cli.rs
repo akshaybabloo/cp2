@@ -149,11 +149,7 @@ pub async fn run() {
         }
     }
 
-    if has_errors {
-        std::process::exit(1);
-    }
-
-    if all_entries.is_empty() {
+    if all_entries.is_empty() && all_dirs.is_empty() {
         std::process::exit(1);
     }
 

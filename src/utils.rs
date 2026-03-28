@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tokio::fs;
 
 /// Trims long file names for display
@@ -20,29 +20,6 @@ pub fn trim_filename(name: &str, max_len: usize) -> String {
     let end_len = remaining / 2;
 
     format!("{}{}{}", &name[..start_len], ellipsis, &name[name.len() - end_len..])
-}
-
-/// Helper function to normalize a path, resolving `.` and `..` components.
-pub(crate) fn normalize_path(path: &Path) -> PathBuf {
-    let mut components = path.components().peekable();
-    let mut ret = if let Some(c @ Component::RootDir) = components.peek().cloned() {
-        components.next();
-        PathBuf::from(c.as_os_str())
-    } else {
-        PathBuf::new()
-    };
-
-    for component in components {
-        match component {
-            Component::Normal(c) => ret.push(c),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                ret.pop();
-            }
-            _ => {}
-        }
-    }
-    ret
 }
 
 /// A file to be copied with source path, destination path, and size.
@@ -93,11 +70,13 @@ pub async fn collect_copy_entries(
         let dir_name = source.file_name().ok_or("source has no file name")?;
         let dest_dir = dest_base.join(dir_name);
 
-        // Check for copy-into-self
-        let cwd = std::env::current_dir()?;
-        let src_norm = normalize_path(&cwd.join(source));
-        let dest_norm = normalize_path(&cwd.join(&dest_dir));
-        if dest_norm.starts_with(&src_norm) && dest_norm != src_norm {
+        // Check for copy-into-self using canonicalized paths.
+        // dest_dir may not exist yet, so canonicalize source and dest_base
+        // separately, then append dir_name to the canonical dest_base.
+        let src_canon = fs::canonicalize(source).await?;
+        let dest_base_canon = fs::canonicalize(dest_base).await?;
+        let dest_canon = dest_base_canon.join(dir_name);
+        if dest_canon.starts_with(&src_canon) && dest_canon != src_canon {
             return Err("cannot copy a directory into itself".into());
         }
 
