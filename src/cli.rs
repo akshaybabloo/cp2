@@ -1,8 +1,9 @@
-use crate::copy::{copy_dir_recursive, copy_file_with_dual_progress};
-use crate::utils::{get_copy_size, trim_filename};
+use crate::copy::copy_file_with_dual_progress;
+use crate::utils::{collect_copy_entries, trim_filename, CopyEntry};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
+use std::collections::HashSet;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -31,6 +32,10 @@ struct Args {
     /// parallel level (number of concurrent copy operations)
     #[arg(short, long, default_value_t = 4)]
     parallel: usize,
+
+    /// Sync each file to disk after copying (slower, but crash-safe)
+    #[arg(short = 'S', long, default_value_t = false)]
+    sync: bool,
 
     #[command(flatten)]
     verbosity: Verbosity,
@@ -112,19 +117,66 @@ pub async fn run() {
         std::process::exit(1);
     }
 
-    let (multi_progress, main_pb) = if !is_quiet {
-        let mut total_files: u64 = 0;
-        let mut total_size: u64 = 0;
+    // Collect all files to copy in a single tree walk per source
+    let mut all_entries: Vec<CopyEntry> = Vec::new();
+    let mut all_dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut total_size: u64 = 0;
+    let mut dest_paths: HashSet<std::path::PathBuf> = HashSet::new();
 
-        for source_str in &valid_sources {
-            let source = Path::new(source_str);
-            let (files, size) = get_copy_size(source).await;
-            total_files += files;
-            total_size += size;
+    for source_str in &valid_sources {
+        let source = Path::new(source_str);
+        match collect_copy_entries(source, destination).await {
+            Ok((entries, dirs, _count, size)) => {
+                // Check for duplicate destination paths before extending
+                let mut source_has_dup = false;
+                for entry in &entries {
+                    if dest_paths.contains(&entry.to) {
+                        eprintln!(
+                            "{} {} -> {}",
+                            "Duplicate destination path:".red(),
+                            entry.from.display().to_string().red(),
+                            entry.to.display().to_string().red()
+                        );
+                        has_errors = true;
+                        source_has_dup = true;
+                    }
+                }
+                if source_has_dup {
+                    continue;
+                }
+                for entry in &entries {
+                    dest_paths.insert(entry.to.clone());
+                }
+                all_entries.extend(entries);
+                all_dirs.extend(dirs);
+                total_size += size;
+            }
+            Err(e) => {
+                eprintln!("{} {}", "Error:".red(), e.to_string().red());
+                has_errors = true;
+            }
         }
+    }
 
-        log::info!("Total files to copy: {}, total size: {}", total_files, total_size);
+    if all_entries.is_empty() && all_dirs.is_empty() {
+        std::process::exit(1);
+    }
 
+    log::info!(
+        "Total files to copy: {}, total size: {}",
+        all_entries.len(),
+        total_size
+    );
+
+    // Create all destination directories upfront
+    for dir in &all_dirs {
+        if let Err(e) = tokio::fs::create_dir_all(dir).await {
+            eprintln!("{} {}", "Error creating directory:".red(), e.to_string().red());
+            std::process::exit(1);
+        }
+    }
+
+    let (multi_progress, main_pb) = if !is_quiet {
         let multi = MultiProgress::new();
         let main_pb = multi.add(ProgressBar::new(total_size));
         main_pb.set_style(
@@ -143,10 +195,10 @@ pub async fn run() {
 
     let semaphore = Arc::new(Semaphore::new(parallel));
     let has_failed = Arc::new(Mutex::new(has_errors));
+    let sync = args.sync;
     let mut tasks = Vec::new();
 
-    for source_str in valid_sources {
-        let destination = destination.to_path_buf();
+    for entry in all_entries {
         let sem = Arc::clone(&semaphore);
         let multi_clone = multi_progress.as_ref().map(Arc::clone);
         let main_pb_clone = main_pb.as_ref().map(Arc::clone);
@@ -154,19 +206,14 @@ pub async fn run() {
 
         tasks.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("failed to acquire semaphore permit");
-            let source = Path::new(&source_str);
 
-            // Create individual progress bar for this file/directory
+            // Create per-file progress bar (no steady tick to reduce overhead)
             let file_pb = if let Some(ref multi) = multi_clone {
-                let file_name = source.file_name().and_then(|n| n.to_str()).unwrap_or(&source_str);
+                let file_name = entry.from.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
 
-                let file_size = if source.is_file() {
-                    tokio::fs::metadata(source).await.map(|m| m.len()).unwrap_or(0)
-                } else {
-                    0 // For directories, we'll update size as we go
-                };
-
-                let pb = multi.add(ProgressBar::new(file_size));
+                let pb = multi.add(ProgressBar::new(entry.size));
                 pb.set_style(
                     ProgressStyle::default_bar()
                         .template("  {spinner:.green} {msg:<30} [{wide_bar:.yellow/blue}] {bytes}/{total_bytes}")
@@ -175,48 +222,31 @@ pub async fn run() {
                 );
                 let display_name = trim_filename(file_name, 28);
                 pb.set_message(format!("Copying {}", display_name));
-                pb.enable_steady_tick(std::time::Duration::from_millis(100));
                 Some(pb)
             } else {
                 None
             };
 
-            if source.is_file() {
-                let file_name = source.file_name().unwrap_or_else(|| std::ffi::OsStr::new(&source_str));
-                let dest_path = destination.join(file_name);
-
-                match copy_file_with_dual_progress(source, &dest_path, file_pb.as_ref(), main_pb_clone.as_deref()).await
-                {
-                    Ok(_) => {
-                        if let Some(ref pb) = file_pb {
-                            pb.finish_and_clear();
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(ref pb) = file_pb {
-                            pb.finish_and_clear();
-                        }
-                        eprintln!("Error copying file: {}", e);
-                        *has_failed_clone.lock().unwrap() = true;
+            match copy_file_with_dual_progress(
+                &entry.from,
+                &entry.to,
+                file_pb.as_ref(),
+                main_pb_clone.as_deref(),
+                sync,
+            )
+            .await
+            {
+                Ok(_) => {
+                    if let Some(ref pb) = file_pb {
+                        pb.finish_and_clear();
                     }
                 }
-            } else if source.is_dir() {
-                let dir_name = source.file_name().unwrap_or_else(|| std::ffi::OsStr::new(&source_str));
-                let dest_path = destination.join(dir_name);
-
-                match copy_dir_recursive(source, &dest_path, main_pb_clone.as_deref()).await {
-                    Ok(_) => {
-                        if let Some(ref pb) = file_pb {
-                            pb.finish_and_clear();
-                        }
+                Err(e) => {
+                    if let Some(ref pb) = file_pb {
+                        pb.finish_and_clear();
                     }
-                    Err(e) => {
-                        if let Some(ref pb) = file_pb {
-                            pb.finish_and_clear();
-                        }
-                        eprintln!("Error copying directory: {}", e);
-                        *has_failed_clone.lock().unwrap() = true;
-                    }
+                    eprintln!("Error copying file: {}", e);
+                    *has_failed_clone.lock().unwrap() = true;
                 }
             }
         }));
