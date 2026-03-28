@@ -126,7 +126,7 @@ pub async fn run() {
                 // Check for duplicate destination paths before extending
                 let mut source_has_dup = false;
                 for entry in &entries {
-                    if !dest_paths.insert(entry.to.clone()) {
+                    if dest_paths.contains(&entry.to) {
                         eprintln!(
                             "{} {} -> {}",
                             "Duplicate destination path:".red(),
@@ -139,6 +139,9 @@ pub async fn run() {
                 }
                 if source_has_dup {
                     continue;
+                }
+                for entry in &entries {
+                    dest_paths.insert(entry.to.clone());
                 }
                 all_entries.extend(entries);
                 all_dirs.extend(dirs);
