@@ -14,14 +14,33 @@ use crate::config::RemoteConfig;
 /// Files at or above it use multipart upload.
 const MULTIPART_THRESHOLD: u64 = 8 * 1024 * 1024; // 8 MiB
 
-/// Size of each multipart part (minimum allowed by S3 is 5 MiB).
-const PART_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
+/// Default multipart part size (S3's minimum allowed is 5 MiB).
+const MIN_PART_SIZE: u64 = 8 * 1024 * 1024; // 8 MiB
+
+/// S3's hard limit on the number of parts per multipart upload.
+const MAX_PARTS: u64 = 10_000;
+
+/// S3's hard limit on a single part.
+const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5 GiB
 
 /// A source file paired with the S3 key it should be uploaded to.
 pub struct S3UploadEntry {
     pub from: PathBuf,
     pub key: String,
     pub size: u64,
+}
+
+/// Picks a multipart part size such that the file fits within S3's 10,000-part
+/// limit. Returns an error if the file exceeds S3's supported maximum (~5 TiB).
+#[doc(hidden)]
+pub fn pick_part_size(file_size: u64) -> Result<u64, String> {
+    let needed = file_size.div_ceil(MAX_PARTS).max(MIN_PART_SIZE);
+    if needed > MAX_PART_SIZE {
+        return Err(format!(
+            "file size {file_size} bytes exceeds S3's maximum supported object size (~5 TiB)"
+        ));
+    }
+    Ok(needed)
 }
 
 /// Builds an [`aws_sdk_s3::Client`] from a [`RemoteConfig`].
@@ -155,7 +174,8 @@ pub async fn upload_file(
     if file_size < MULTIPART_THRESHOLD {
         upload_single(client, from, bucket, key, file_size, file_pb, main_pb).await
     } else {
-        upload_multipart(client, from, bucket, key, file_pb, main_pb).await
+        let part_size = pick_part_size(file_size)?;
+        upload_multipart(client, from, bucket, key, part_size, file_pb, main_pb).await
     }
 }
 
@@ -196,6 +216,7 @@ async fn upload_multipart(
     from: &Path,
     bucket: &str,
     key: &str,
+    part_size: u64,
     file_pb: Option<&ProgressBar>,
     main_pb: Option<&ProgressBar>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -213,7 +234,10 @@ async fn upload_multipart(
         .to_string();
 
     let mut file = File::open(from).await?;
-    let mut buf = vec![0u8; PART_SIZE];
+    let part_size_usize: usize = part_size
+        .try_into()
+        .map_err(|_| "part size does not fit in usize on this platform")?;
+    let mut buf = vec![0u8; part_size_usize];
     let mut completed_parts: Vec<CompletedPart> = Vec::new();
     let mut part_number = 1i32;
 

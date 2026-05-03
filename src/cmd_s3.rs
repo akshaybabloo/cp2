@@ -87,6 +87,10 @@ pub(crate) async fn run(
     }
 
     if all_entries.is_empty() {
+        if has_errors {
+            std::process::exit(1);
+        }
+        eprintln!("Nothing to upload.");
         std::process::exit(1);
     }
 

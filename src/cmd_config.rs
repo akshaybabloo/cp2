@@ -1,30 +1,13 @@
+use crate::cli::ConfigAction;
 use crate::config::{self, RemoteConfig};
 use std::io::{self, Write};
 
-/// Dispatches `cp2 config <subcommand> [args...]`.
-pub(crate) async fn run(args: &[String]) {
-    match args.first().map(String::as_str) {
-        Some("create") => match args.get(1) {
-            Some(name) => create(name),
-            None => {
-                eprintln!("Usage: cp2 config create <name>");
-                std::process::exit(1);
-            }
-        },
-        Some("list") => list(),
-        Some("delete") => match args.get(1) {
-            Some(name) => delete(name),
-            None => {
-                eprintln!("Usage: cp2 config delete <name>");
-                std::process::exit(1);
-            }
-        },
-        _ => {
-            eprintln!(
-                "Usage:\n  cp2 config create <name>   Create a new remote configuration\n  cp2 config list            List all configured remotes\n  cp2 config delete <name>   Remove a remote configuration"
-            );
-            std::process::exit(1);
-        }
+/// Dispatches a parsed `cp2 config <action>` command.
+pub(crate) fn run(action: ConfigAction) {
+    match action {
+        ConfigAction::Create { name } => create(&name),
+        ConfigAction::List => list(),
+        ConfigAction::Delete { name } => delete(&name),
     }
 }
 
@@ -45,13 +28,30 @@ fn prompt(label: &str, default: &str) -> String {
     }
 }
 
+/// Prompts until the user enters a non-empty value.
+fn prompt_required(label: &str) -> String {
+    loop {
+        let value = prompt(label, "");
+        if !value.is_empty() {
+            return value;
+        }
+        eprintln!("This field is required.");
+    }
+}
+
 fn create(name: &str) {
     println!("Creating remote \"{}\"", name);
     println!("Only S3-compatible remotes are supported.\n");
 
     let provider = prompt("Provider (e.g. AWS, Minio, DigitalOcean)", "AWS");
-    let access_key_id = prompt("Access key ID", "");
-    let secret_access_key = rpassword::prompt_password("Secret access key: ").unwrap_or_default();
+    let access_key_id = prompt_required("Access key ID");
+    let secret_access_key = loop {
+        let value = rpassword::prompt_password("Secret access key: ").unwrap_or_default();
+        if !value.is_empty() {
+            break value;
+        }
+        eprintln!("This field is required.");
+    };
     let region = prompt("Region", "us-east-1");
     let endpoint = prompt("Endpoint URL (leave blank for AWS S3)", "");
 
@@ -74,11 +74,12 @@ fn create(name: &str) {
     );
 
     match config::save_config(&cfg) {
-        Ok(_) => println!(
-            "\nRemote \"{}\" saved to {}",
-            name,
-            config::config_path().display()
-        ),
+        Ok(_) => {
+            let path = config::config_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "(unknown)".to_string());
+            println!("\nRemote \"{}\" saved to {}", name, path);
+        }
         Err(e) => {
             eprintln!("Failed to save configuration: {}", e);
             std::process::exit(1);
@@ -102,13 +103,18 @@ fn list() {
 
     let mut names: Vec<&String> = cfg.keys().collect();
     names.sort();
+    let name_width = names.iter().map(|n| n.len()).max().unwrap_or(0);
     for name in names {
         let r = &cfg[name];
         let provider = r.provider.as_deref().unwrap_or("unknown");
         let region = r.region.as_deref().unwrap_or("unknown");
         println!(
-            "{:<20} type={} provider={} region={}",
-            name, r.remote_type, provider, region
+            "{:<width$} type={} provider={} region={}",
+            name,
+            r.remote_type,
+            provider,
+            region,
+            width = name_width,
         );
     }
 }

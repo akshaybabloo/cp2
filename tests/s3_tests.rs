@@ -2,7 +2,37 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
+use std::sync::Mutex;
 use tempfile::TempDir;
+
+// Serializes tests that mutate the process-wide CP2_CONFIG env var.
+static CONFIG_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct ConfigEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ConfigEnvGuard {
+    fn set(path: &std::path::Path) -> Self {
+        let lock = CONFIG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: the static mutex serializes all CP2_CONFIG mutations within
+        // this test binary, so no other thread is reading the env at this
+        // moment.
+        unsafe {
+            std::env::set_var("CP2_CONFIG", path);
+        }
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for ConfigEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: same reasoning as `set`.
+        unsafe {
+            std::env::remove_var("CP2_CONFIG");
+        }
+    }
+}
 
 // ─── config module tests ──────────────────────────────────────────────────────
 
@@ -10,8 +40,9 @@ use tempfile::TempDir;
 fn test_config_save_and_load_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let config_path = tmp.path().join("config.toml");
+    let _guard = ConfigEnvGuard::set(&config_path);
 
-    let mut cfg = HashMap::new();
+    let mut cfg: cp2::config::Config = HashMap::new();
     cfg.insert(
         "myremote".to_string(),
         cp2::config::RemoteConfig {
@@ -24,11 +55,8 @@ fn test_config_save_and_load_roundtrip() {
         },
     );
 
-    // Write manually to a custom path to avoid touching the real config.
-    let content = toml::to_string_pretty(&cfg).unwrap();
-    fs::write(&config_path, content).unwrap();
-
-    let loaded: cp2::config::Config = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    cp2::config::save_config(&cfg).expect("save");
+    let loaded = cp2::config::load_config().expect("load");
 
     let r = loaded.get("myremote").expect("remote should exist");
     assert_eq!(r.remote_type, "s3");
@@ -40,11 +68,22 @@ fn test_config_save_and_load_roundtrip() {
 }
 
 #[test]
+fn test_config_load_returns_empty_when_missing() {
+    let tmp = TempDir::new().unwrap();
+    let config_path = tmp.path().join("missing.toml");
+    let _guard = ConfigEnvGuard::set(&config_path);
+
+    let loaded = cp2::config::load_config().expect("load");
+    assert!(loaded.is_empty());
+}
+
+#[test]
 fn test_config_with_endpoint() {
     let tmp = TempDir::new().unwrap();
     let config_path = tmp.path().join("config.toml");
+    let _guard = ConfigEnvGuard::set(&config_path);
 
-    let mut cfg = HashMap::new();
+    let mut cfg: cp2::config::Config = HashMap::new();
     cfg.insert(
         "minio".to_string(),
         cp2::config::RemoteConfig {
@@ -57,12 +96,37 @@ fn test_config_with_endpoint() {
         },
     );
 
-    let content = toml::to_string_pretty(&cfg).unwrap();
-    fs::write(&config_path, content).unwrap();
-
-    let loaded: cp2::config::Config = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    cp2::config::save_config(&cfg).expect("save");
+    let loaded = cp2::config::load_config().expect("load");
     let r = loaded.get("minio").expect("remote should exist");
     assert_eq!(r.endpoint.as_deref(), Some("http://localhost:9000"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_config_file_is_chmod_600() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let config_path = tmp.path().join("config.toml");
+    let _guard = ConfigEnvGuard::set(&config_path);
+
+    let mut cfg: cp2::config::Config = HashMap::new();
+    cfg.insert(
+        "x".to_string(),
+        cp2::config::RemoteConfig {
+            remote_type: "s3".to_string(),
+            provider: None,
+            access_key_id: None,
+            secret_access_key: None,
+            region: None,
+            endpoint: None,
+        },
+    );
+    cp2::config::save_config(&cfg).expect("save");
+
+    let mode = fs::metadata(&config_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "config file must be readable only by the owner");
 }
 
 #[test]
@@ -155,4 +219,38 @@ async fn test_s3_entries_directory_no_prefix() {
         cp2::s3::collect_s3_upload_entries(&src, "").await.unwrap();
 
     assert_eq!(entries[0].key, "assets/logo.svg");
+}
+
+// ─── pick_part_size tests ─────────────────────────────────────────────────────
+
+const MIN_PART_SIZE: u64 = 8 * 1024 * 1024;
+const MAX_PARTS: u64 = 10_000;
+
+#[test]
+fn test_part_size_small_file_uses_min() {
+    assert_eq!(cp2::s3::pick_part_size(1024).unwrap(), MIN_PART_SIZE);
+    assert_eq!(cp2::s3::pick_part_size(MIN_PART_SIZE).unwrap(), MIN_PART_SIZE);
+}
+
+#[test]
+fn test_part_size_under_part_limit() {
+    // 10 GiB < 10000 * 8 MiB, so default 8 MiB still works.
+    let ten_gib = 10 * 1024 * 1024 * 1024_u64;
+    assert_eq!(cp2::s3::pick_part_size(ten_gib).unwrap(), MIN_PART_SIZE);
+}
+
+#[test]
+fn test_part_size_scales_for_huge_file() {
+    // 1 TiB requires part size > 8 MiB to stay under 10000 parts.
+    let one_tib = 1024 * 1024 * 1024 * 1024_u64;
+    let ps = cp2::s3::pick_part_size(one_tib).unwrap();
+    assert!(ps > MIN_PART_SIZE);
+    assert!(one_tib.div_ceil(ps) <= MAX_PARTS);
+}
+
+#[test]
+fn test_part_size_rejects_files_above_5_tib() {
+    // 50 TiB forces a part size above S3's 5 GiB max.
+    let way_too_big = 50 * 1024 * 1024 * 1024 * 1024_u64;
+    assert!(cp2::s3::pick_part_size(way_too_big).is_err());
 }

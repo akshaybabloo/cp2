@@ -1,5 +1,5 @@
 use crate::{cmd_config, cmd_local, cmd_s3};
-use clap::{CommandFactory, FromArgMatches, Parser};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use std::thread;
 
@@ -7,22 +7,22 @@ use std::thread;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Source files or directories
     #[arg(required = true)]
     source: Vec<String>,
 
     /// Destination directory (local path or remote:bucket/prefix)
     #[arg(required = true)]
-    destination: String,
+    destination: Option<String>,
 
     /// Enable recursive copying for directories
     #[arg(short, long, default_value_t = false)]
     recursive: bool,
-
-    /// Interactive mode
-    #[arg(short, long, default_value_t = false)]
-    interactive: bool,
 
     /// Parallel level (number of concurrent copy operations)
     #[arg(short, long, default_value_t = 4)]
@@ -36,6 +36,31 @@ struct Args {
     verbosity: Verbosity,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Manage remote configurations
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum ConfigAction {
+    /// Create a new remote configuration
+    Create {
+        /// Name of the remote (e.g. "myaws")
+        name: String,
+    },
+    /// List all configured remotes
+    List,
+    /// Remove a remote configuration
+    Delete {
+        /// Name of the remote to delete
+        name: String,
+    },
+}
+
 impl Args {
     fn command_with_dynamic_parallel() -> clap::Command {
         let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
@@ -46,7 +71,8 @@ impl Args {
 
 // ─── Destination type ─────────────────────────────────────────────────────────
 
-enum Destination {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Destination {
     /// A regular local filesystem path.
     Local(std::path::PathBuf),
     /// An S3 remote: `remote_name:bucket/prefix`.
@@ -60,11 +86,13 @@ enum Destination {
 
 /// Parses a destination string, distinguishing `remote:bucket/prefix` from a
 /// plain local path.
-fn parse_destination(dest: &str) -> Destination {
+pub fn parse_destination(dest: &str) -> Destination {
     if let Some(colon_pos) = dest.find(':') {
         let name = &dest[..colon_pos];
-        // A remote name must be non-empty and must not contain path separators.
-        if !name.is_empty() && !name.contains('/') && !name.contains('\\') {
+        // A remote name must be at least 2 characters and must not contain
+        // path separators. The 2-char minimum disambiguates remotes from
+        // Windows drive letters like `C:\path`.
+        if name.len() >= 2 && !name.contains('/') && !name.contains('\\') {
             let rest = &dest[colon_pos + 1..];
             // Split rest into bucket + optional prefix.
             let (bucket, prefix) = match rest.find('/') {
@@ -86,29 +114,32 @@ fn parse_destination(dest: &str) -> Destination {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 pub async fn run() {
-    // Intercept the `config` subcommand before clap parses the main args.
-    let raw: Vec<String> = std::env::args().skip(1).collect();
-    if raw.first().map(String::as_str) == Some("config") {
-        cmd_config::run(&raw[1..]).await;
-        return;
-    }
-
     let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     log::debug!("Max parallel level (number of CPU cores): {}", max);
     let matches = Args::command_with_dynamic_parallel().get_matches();
     let args = Args::from_arg_matches(&matches).expect("parse args");
     log::debug!("Parsed args: {:#?}", args);
 
+    env_logger::Builder::new()
+        .filter_level(args.verbosity.into())
+        .init();
+
+    if let Some(Command::Config { action }) = args.command {
+        cmd_config::run(action);
+        return;
+    }
+
     let parallel = args.parallel.min(max);
     log::debug!("Using parallel level: {}", parallel);
 
     let is_quiet = args.verbosity.is_silent();
 
-    env_logger::Builder::new()
-        .filter_level(args.verbosity.into())
-        .init();
+    // Required by clap when no subcommand is used.
+    let destination = args
+        .destination
+        .expect("clap guarantees destination is set when no subcommand is used");
 
-    match parse_destination(&args.destination) {
+    match parse_destination(&destination) {
         Destination::Local(dest_path) => {
             cmd_local::run(
                 args.source,
