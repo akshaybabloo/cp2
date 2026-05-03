@@ -52,7 +52,7 @@ cp2 config create <name>
 
 Example session:
 
-```
+```text
 Creating remote "myaws"
 Only S3-compatible remotes are supported.
 
@@ -94,13 +94,13 @@ cp2 a.txt b.txt myaws:my-bucket/uploads
 cp2 -r my-folder myaws:my-bucket/backups
 ```
 
-Files larger than 8 MiB are automatically uploaded using S3 **multipart upload** for reliability and better throughput.
+Files 8 MiB or larger are automatically uploaded using S3 **multipart upload** for reliability and better throughput.
 
 ### S3-compatible services (MinIO, DigitalOcean Spaces, etc.)
 
 Set the `Endpoint URL` during `cp2 config create` to point to any S3-compatible service:
 
-```
+```text
 Endpoint URL (leave blank for AWS S3): http://localhost:9000
 ```
 

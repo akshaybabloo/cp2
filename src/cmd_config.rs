@@ -19,7 +19,17 @@ fn prompt(label: &str, default: &str) -> String {
     }
     io::stdout().flush().ok();
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap_or(0);
+    match io::stdin().read_line(&mut input) {
+        Ok(0) => {
+            eprintln!("\nInput stream closed.");
+            std::process::exit(1);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Failed to read input: {}", e);
+            std::process::exit(1);
+        }
+    }
     let trimmed = input.trim().to_string();
     if trimmed.is_empty() {
         default.to_string()
@@ -46,7 +56,13 @@ fn create(name: &str) {
     let provider = prompt("Provider (e.g. AWS, Minio, DigitalOcean)", "AWS");
     let access_key_id = prompt_required("Access key ID");
     let secret_access_key = loop {
-        let value = rpassword::prompt_password("Secret access key: ").unwrap_or_default();
+        let value = match rpassword::prompt_password("Secret access key: ") {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Failed to read secret access key: {}", e);
+                std::process::exit(1);
+            }
+        };
         if !value.is_empty() {
             break value;
         }
@@ -55,7 +71,13 @@ fn create(name: &str) {
     let region = prompt("Region", "us-east-1");
     let endpoint = prompt("Endpoint URL (leave blank for AWS S3)", "");
 
-    let mut cfg = config::load_config().unwrap_or_default();
+    let mut cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     cfg.insert(
         name.to_string(),

@@ -25,7 +25,7 @@ struct Args {
     recursive: bool,
 
     /// Parallel level (number of concurrent copy operations)
-    #[arg(short, long, default_value_t = 4)]
+    #[arg(short, long, default_value_t = 4, value_parser = parse_parallel)]
     parallel: usize,
 
     /// Sync each file to disk after copying (slower, but crash-safe; local copies only)
@@ -67,6 +67,16 @@ impl Args {
         Args::command()
             .mut_arg("parallel", move |arg| arg.help(format!("Parallel level (max: {max})")))
     }
+}
+
+fn parse_parallel(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a valid positive integer"))?;
+    if n == 0 {
+        return Err("must be at least 1".to_string());
+    }
+    Ok(n)
 }
 
 // ─── Destination type ─────────────────────────────────────────────────────────
@@ -129,7 +139,7 @@ pub async fn run() {
         return;
     }
 
-    let parallel = args.parallel.min(max);
+    let parallel = args.parallel.clamp(1, max);
     log::debug!("Using parallel level: {}", parallel);
 
     let is_quiet = args.verbosity.is_silent();

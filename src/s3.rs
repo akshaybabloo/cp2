@@ -262,7 +262,13 @@ async fn upload_multipart(
 
         match part_result {
             Ok(resp) => {
-                let etag = resp.e_tag().unwrap_or_default().to_string();
+                let etag = match resp.e_tag() {
+                    Some(v) => v.to_string(),
+                    None => {
+                        abort_multipart(client, bucket, key, &upload_id).await;
+                        return Err("S3 upload_part response missing ETag".into());
+                    }
+                };
                 completed_parts.push(
                     CompletedPart::builder()
                         .part_number(part_number)
@@ -278,15 +284,7 @@ async fn upload_multipart(
                 }
             }
             Err(e) => {
-                // Best-effort abort so the incomplete upload doesn't incur
-                // storage costs.
-                let _ = client
-                    .abort_multipart_upload()
-                    .bucket(bucket)
-                    .key(key)
-                    .upload_id(&upload_id)
-                    .send()
-                    .await;
+                abort_multipart(client, bucket, key, &upload_id).await;
                 return Err(e.into());
             }
         }
@@ -298,16 +296,32 @@ async fn upload_multipart(
         .set_parts(Some(completed_parts))
         .build();
 
-    client
+    if let Err(e) = client
         .complete_multipart_upload()
         .bucket(bucket)
         .key(key)
         .upload_id(&upload_id)
         .multipart_upload(completed)
         .send()
-        .await?;
+        .await
+    {
+        abort_multipart(client, bucket, key, &upload_id).await;
+        return Err(e.into());
+    }
 
     Ok(())
+}
+
+/// Best-effort abort so an incomplete multipart upload doesn't incur
+/// storage costs.
+async fn abort_multipart(client: &Client, bucket: &str, key: &str, upload_id: &str) {
+    let _ = client
+        .abort_multipart_upload()
+        .bucket(bucket)
+        .key(key)
+        .upload_id(upload_id)
+        .send()
+        .await;
 }
 
 /// Reads up to `buf.len()` bytes from `file`, filling the buffer as much as

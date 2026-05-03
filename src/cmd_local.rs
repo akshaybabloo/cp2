@@ -211,7 +211,10 @@ pub(crate) async fn run(
     }
 
     for task in tasks {
-        task.await.expect("copy task failed");
+        if let Err(e) = task.await {
+            eprintln!("Copy task failed: {}", e);
+            *has_failed.lock().unwrap() = true;
+        }
     }
 
     if let Some(pb) = main_pb {

@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Configuration for an S3-compatible remote.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Intentionally does not derive `Debug`: the struct holds plaintext
+/// credentials and we don't want them landing in log lines or panic
+/// messages.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
     /// Remote type – currently only "s3" is supported.
     #[serde(rename = "type")]
@@ -54,15 +58,15 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
 }
 
 /// Persists the configuration map to disk, creating the directory if needed.
-/// On unix, restricts the file mode to 0600 since it contains plaintext
-/// credentials.
+/// On unix, the file is created with mode 0600 from the start so the
+/// plaintext credentials are never readable by other users, even briefly.
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, toml::to_string_pretty(config)?)?;
-    set_secure_permissions(&path)?;
+    let serialized = toml::to_string_pretty(config)?;
+    write_secure(&path, serialized.as_bytes())?;
     Ok(())
 }
 
@@ -72,13 +76,27 @@ pub fn get_remote<'a>(config: &'a Config, name: &str) -> Option<&'a RemoteConfig
 }
 
 #[cfg(unix)]
-fn set_secure_permissions(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+fn write_secure(
+    path: &std::path::Path,
+    contents: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(contents)?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn set_secure_permissions(_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn write_secure(
+    path: &std::path::Path,
+    contents: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(path, contents)?;
     Ok(())
 }

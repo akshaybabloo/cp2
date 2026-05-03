@@ -10,18 +10,20 @@ static CONFIG_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct ConfigEnvGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
 }
 
 impl ConfigEnvGuard {
     fn set(path: &std::path::Path) -> Self {
         let lock = CONFIG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("CP2_CONFIG");
         // SAFETY: the static mutex serializes all CP2_CONFIG mutations within
         // this test binary, so no other thread is reading the env at this
         // moment.
         unsafe {
             std::env::set_var("CP2_CONFIG", path);
         }
-        Self { _lock: lock }
+        Self { _lock: lock, previous }
     }
 }
 
@@ -29,7 +31,10 @@ impl Drop for ConfigEnvGuard {
     fn drop(&mut self) {
         // SAFETY: same reasoning as `set`.
         unsafe {
-            std::env::remove_var("CP2_CONFIG");
+            match self.previous.as_ref() {
+                Some(prev) => std::env::set_var("CP2_CONFIG", prev),
+                None => std::env::remove_var("CP2_CONFIG"),
+            }
         }
     }
 }
