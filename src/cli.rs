@@ -51,6 +51,9 @@ pub(crate) enum ConfigAction {
     Create {
         /// Name of the remote (e.g. "myaws")
         name: String,
+        /// Overwrite an existing remote of the same name without prompting
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
     },
     /// List all configured remotes
     List,
@@ -58,6 +61,9 @@ pub(crate) enum ConfigAction {
     Delete {
         /// Name of the remote to delete
         name: String,
+        /// Skip the confirmation prompt
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
     },
 }
 

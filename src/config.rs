@@ -63,7 +63,7 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        create_secure_dir(parent)?;
     }
     let serialized = toml::to_string_pretty(config)?;
     write_secure(&path, serialized.as_bytes())?;
@@ -98,5 +98,28 @@ fn write_secure(
     contents: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(path, contents)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_secure_dir(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::DirBuilderExt;
+    if !path.exists() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+    } else {
+        // Tighten permissions on an existing directory in case it was created
+        // earlier with a looser umask.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_secure_dir(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(path)?;
     Ok(())
 }

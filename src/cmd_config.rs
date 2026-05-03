@@ -5,9 +5,9 @@ use std::io::{self, Write};
 /// Dispatches a parsed `cp2 config <action>` command.
 pub(crate) fn run(action: ConfigAction) {
     match action {
-        ConfigAction::Create { name } => create(&name),
+        ConfigAction::Create { name, force } => create(&name, force),
         ConfigAction::List => list(),
-        ConfigAction::Delete { name } => delete(&name),
+        ConfigAction::Delete { name, force } => delete(&name, force),
     }
 }
 
@@ -49,7 +49,26 @@ fn prompt_required(label: &str) -> String {
     }
 }
 
-fn create(name: &str) {
+fn create(name: &str, force: bool) {
+    let mut cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if cfg.contains_key(name) && !force {
+        let answer = prompt(
+            &format!("Remote \"{}\" already exists. Overwrite? [y/N]", name),
+            "N",
+        );
+        if !answer.eq_ignore_ascii_case("y") && !answer.eq_ignore_ascii_case("yes") {
+            println!("Aborted.");
+            return;
+        }
+    }
+
     println!("Creating remote \"{}\"", name);
     println!("Only S3-compatible remotes are supported.\n");
 
@@ -70,14 +89,6 @@ fn create(name: &str) {
     };
     let region = prompt("Region", "us-east-1");
     let endpoint = prompt("Endpoint URL (leave blank for AWS S3)", "");
-
-    let mut cfg = match config::load_config() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to load configuration: {}", e);
-            std::process::exit(1);
-        }
-    };
 
     cfg.insert(
         name.to_string(),
@@ -141,7 +152,7 @@ fn list() {
     }
 }
 
-fn delete(name: &str) {
+fn delete(name: &str, force: bool) {
     let mut cfg = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
@@ -150,10 +161,23 @@ fn delete(name: &str) {
         }
     };
 
-    if cfg.remove(name).is_none() {
+    if !cfg.contains_key(name) {
         eprintln!("Remote \"{}\" not found.", name);
         std::process::exit(1);
     }
+
+    if !force {
+        let answer = prompt(
+            &format!("Delete remote \"{}\"? [y/N]", name),
+            "N",
+        );
+        if !answer.eq_ignore_ascii_case("y") && !answer.eq_ignore_ascii_case("yes") {
+            println!("Aborted.");
+            return;
+        }
+    }
+
+    cfg.remove(name);
 
     match config::save_config(&cfg) {
         Ok(_) => println!("Remote \"{}\" deleted.", name),

@@ -15,10 +15,10 @@ use crate::config::RemoteConfig;
 const MULTIPART_THRESHOLD: u64 = 8 * 1024 * 1024; // 8 MiB
 
 /// Default multipart part size (S3's minimum allowed is 5 MiB).
-const MIN_PART_SIZE: u64 = 8 * 1024 * 1024; // 8 MiB
+pub const MIN_PART_SIZE: u64 = 8 * 1024 * 1024; // 8 MiB
 
 /// S3's hard limit on the number of parts per multipart upload.
-const MAX_PARTS: u64 = 10_000;
+pub const MAX_PARTS: u64 = 10_000;
 
 /// S3's hard limit on a single part.
 const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5 GiB
@@ -47,11 +47,17 @@ pub fn pick_part_size(file_size: u64) -> Result<u64, String> {
 pub async fn create_client(
     config: &RemoteConfig,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    let access_key = config.access_key_id.as_deref().unwrap_or_default().to_string();
+    let access_key = config
+        .access_key_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or("access_key_id is not set; run `cp2 config create <name>` to configure it")?
+        .to_string();
     let secret_key = config
         .secret_access_key
         .as_deref()
-        .unwrap_or_default()
+        .filter(|s| !s.is_empty())
+        .ok_or("secret_access_key is not set; run `cp2 config create <name>` to configure it")?
         .to_string();
 
     let credentials = Credentials::new(access_key, secret_key, None, None, "cp2");
@@ -151,8 +157,11 @@ pub async fn collect_s3_upload_entries(
                     key,
                     size,
                 });
+            } else if m.file_type().is_symlink() {
+                log::warn!("skipping symlink: {}", p.display());
+            } else {
+                log::warn!("skipping non-regular file: {}", p.display());
             }
-            // Symlinks and special file types are skipped.
         }
     }
 

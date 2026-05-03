@@ -3,6 +3,7 @@ use crate::s3::{self, S3UploadEntry};
 use crate::utils::trim_filename;
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
@@ -52,6 +53,7 @@ pub(crate) async fn run(
     let mut all_entries: Vec<S3UploadEntry> = Vec::new();
     let mut total_size: u64 = 0;
     let mut has_errors = false;
+    let mut seen_keys: HashSet<String> = HashSet::new();
 
     for source_str in &sources {
         let source = Path::new(source_str);
@@ -75,9 +77,21 @@ pub(crate) async fn run(
         }
 
         match s3::collect_s3_upload_entries(source, &prefix).await {
-            Ok((entries, _count, size)) => {
-                all_entries.extend(entries);
-                total_size += size;
+            Ok((entries, _count, _size)) => {
+                for entry in entries {
+                    if !seen_keys.insert(entry.key.clone()) {
+                        eprintln!(
+                            "{} {} -> {}",
+                            "Duplicate destination key:".red(),
+                            entry.from.display().to_string().red(),
+                            entry.key.red(),
+                        );
+                        has_errors = true;
+                        continue;
+                    }
+                    total_size += entry.size;
+                    all_entries.push(entry);
+                }
             }
             Err(e) => {
                 eprintln!("{} {}", "Error:".red(), e.to_string().red());

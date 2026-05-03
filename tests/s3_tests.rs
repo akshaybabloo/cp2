@@ -228,8 +228,7 @@ async fn test_s3_entries_directory_no_prefix() {
 
 // ─── pick_part_size tests ─────────────────────────────────────────────────────
 
-const MIN_PART_SIZE: u64 = 8 * 1024 * 1024;
-const MAX_PARTS: u64 = 10_000;
+use cp2::s3::{MAX_PARTS, MIN_PART_SIZE};
 
 #[test]
 fn test_part_size_small_file_uses_min() {
