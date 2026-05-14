@@ -16,7 +16,7 @@ pub fn trim_filename(name: &str, max_len: usize) -> String {
     }
 
     let remaining = max_len - ellipsis_len;
-    let start_len = (remaining + 1) / 2;
+    let start_len = remaining.div_ceil(2);
     let end_len = remaining / 2;
 
     format!("{}{}{}", &name[..start_len], ellipsis, &name[name.len() - end_len..])
@@ -49,14 +49,13 @@ pub async fn collect_copy_entries(
         // Reject same-file copies to avoid truncating the source
         if let (Ok(src_canon), Ok(dst_canon)) =
             (fs::canonicalize(source).await, fs::canonicalize(&dest).await)
+            && src_canon == dst_canon
         {
-            if src_canon == dst_canon {
-                return Err(format!(
-                    "source and destination are the same file: {}",
-                    source.display()
-                )
-                .into());
-            }
+            return Err(format!(
+                "source and destination are the same file: {}",
+                source.display()
+            )
+            .into());
         }
 
         let size = source_meta.len();
