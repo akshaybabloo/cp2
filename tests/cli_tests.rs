@@ -434,3 +434,97 @@ fn test_copy_dot_source_recursive() {
 
     assert_dirs_equal(&source, &dest_path.join("source"));
 }
+
+#[test]
+fn test_copy_preserves_mtime_and_permissions() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = tmp_dir.path().join("script.sh");
+    File::create(&source).unwrap().write_all(b"#!/bin/sh\n").unwrap();
+    let mtime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    File::options()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o750)).unwrap();
+    }
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    Command::new(cargo_bin!("cp2"))
+        .arg(&source)
+        .arg(&dest_path)
+        .assert()
+        .success();
+
+    let copied = fs::metadata(dest_path.join("script.sh")).unwrap();
+    assert_eq!(copied.modified().unwrap(), mtime);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(copied.permissions().mode() & 0o777, 0o750);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_recopy_over_read_only_destination() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp_dir = TempDir::new().unwrap();
+    let source = tmp_dir.path().join("object");
+    File::create(&source).unwrap().write_all(b"v1").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o444)).unwrap();
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    // The first copy leaves a read-only file; the second must replace it.
+    for _ in 0..2 {
+        Command::new(cargo_bin!("cp2"))
+            .arg(&source)
+            .arg(&dest_path)
+            .assert()
+            .success();
+    }
+
+    let copied = dest_path.join("object");
+    assert_eq!(fs::read_to_string(&copied).unwrap(), "v1");
+    assert_eq!(fs::metadata(&copied).unwrap().permissions().mode() & 0o777, 0o444);
+}
+
+#[test]
+fn test_verbose_lists_copied_files() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = create_test_src(&tmp_dir, &[("a.txt", b"a"), ("sub/b.txt", b"b")]);
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    Command::new(cargo_bin!("cp2"))
+        .arg("-r")
+        .arg("-v")
+        .arg(&source)
+        .arg(&dest_path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("a.txt ->").and(predicate::str::contains("b.txt ->")));
+}
+
+#[test]
+fn test_default_does_not_list_copied_files() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = create_test_src(&tmp_dir, &[("a.txt", b"a")]);
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    Command::new(cargo_bin!("cp2"))
+        .arg("-r")
+        .arg(&source)
+        .arg(&dest_path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("->").not());
+}

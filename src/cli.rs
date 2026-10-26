@@ -1,6 +1,8 @@
 use crate::{cmd_config, cmd_local, cmd_s3};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-use clap_verbosity_flag::Verbosity;
+use clap_verbosity_flag::{Verbosity, WarnLevel};
+use indicatif::MultiProgress;
+use indicatif_log_bridge::LogWrapper;
 use std::thread;
 
 // ─── CLI arguments ────────────────────────────────────────────────────────────
@@ -33,7 +35,7 @@ struct Args {
     sync: bool,
 
     #[command(flatten)]
-    verbosity: Verbosity,
+    verbosity: Verbosity<WarnLevel>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -70,7 +72,18 @@ pub(crate) enum ConfigAction {
 impl Args {
     fn command_with_dynamic_parallel() -> clap::Command {
         let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        Args::command().mut_arg("parallel", move |arg| arg.help(format!("Parallel level (max: {max})")))
+        Args::command()
+            .mut_arg("parallel", move |arg| {
+                arg.help(format!(
+                    "Parallel level (local copies are capped at {max}, the CPU count)"
+                ))
+            })
+            // Short flag only: -v lists each file, -vv adds debug output.
+            .mut_arg("verbose", |arg| {
+                arg.long(None)
+                    .help("List each file as it is copied (-vv for debug output)")
+                    .long_help(None)
+            })
     }
 }
 
@@ -132,7 +145,15 @@ pub async fn run() {
     let matches = Args::command_with_dynamic_parallel().get_matches();
     let args = Args::from_arg_matches(&matches).expect("parse args");
 
-    env_logger::Builder::new().filter_level(args.verbosity.into()).init();
+    // Log lines go through the progress bars' MultiProgress so they don't
+    // corrupt the bars while they are drawn.
+    let multi = MultiProgress::new();
+    let logger = env_logger::Builder::new().filter_level(args.verbosity.into()).build();
+    let level = logger.filter();
+    LogWrapper::new(multi.clone(), logger)
+        .try_init()
+        .expect("logger is initialised once");
+    log::set_max_level(level);
 
     let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     log::debug!("Max parallel level (number of CPU cores): {}", max);
@@ -143,10 +164,9 @@ pub async fn run() {
         return;
     }
 
-    let parallel = args.parallel.clamp(1, max);
-    log::debug!("Using parallel level: {}", parallel);
-
-    let is_quiet = args.verbosity.is_silent();
+    // Warnings are shown by default, so any -q hides the progress bars.
+    let is_quiet = args.verbosity.log_level_filter() < log::LevelFilter::Warn;
+    let multi = (!is_quiet).then_some(multi);
 
     // Required by clap when no subcommand is used.
     let destination = args
@@ -155,21 +175,26 @@ pub async fn run() {
 
     match parse_destination(&destination) {
         Destination::Local(dest_path) => {
-            cmd_local::run(args.source, dest_path, args.recursive, args.sync, parallel, is_quiet).await;
+            // Local copies are bounded by the machine; uploads are bounded by
+            // the network, so S3 uses the requested level as-is.
+            let parallel = args.parallel.clamp(1, max);
+            log::debug!("Using parallel level: {}", parallel);
+            cmd_local::run(args.source, dest_path, args.recursive, args.sync, parallel, multi).await;
         }
         Destination::S3 {
             remote_name,
             bucket,
             prefix,
         } => {
+            log::debug!("Using parallel level: {}", args.parallel);
             cmd_s3::run(
                 args.source,
                 remote_name,
                 bucket,
                 prefix,
                 args.recursive,
-                parallel,
-                is_quiet,
+                args.parallel,
+                multi,
             )
             .await;
         }
