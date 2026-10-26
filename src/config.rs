@@ -40,9 +40,7 @@ pub fn config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Some(path) = std::env::var_os(CONFIG_PATH_ENV) {
         return Ok(PathBuf::from(path));
     }
-    let dir = dirs::config_dir().ok_or(
-        "could not determine the user config directory; set CP2_CONFIG to override",
-    )?;
+    let dir = dirs::config_dir().ok_or("could not determine the user config directory; set CP2_CONFIG to override")?;
     Ok(dir.join("cp2").join("config.toml"))
 }
 
@@ -58,8 +56,9 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
 }
 
 /// Persists the configuration map to disk, creating the directory if needed.
-/// On unix, the file is created with mode 0600 from the start so the
-/// plaintext credentials are never readable by other users, even briefly.
+/// On unix, the file is created with mode 0600 from the start (and an existing
+/// file is tightened to 0600) so the plaintext credentials are not readable by
+/// other users.
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
@@ -76,27 +75,24 @@ pub fn get_remote<'a>(config: &'a Config, name: &str) -> Option<&'a RemoteConfig
 }
 
 #[cfg(unix)]
-fn write_secure(
-    path: &std::path::Path,
-    contents: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn write_secure(path: &std::path::Path, contents: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .mode(0o600)
         .open(path)?;
+    // `mode` only applies when the file is created; tighten an existing file
+    // too.
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     f.write_all(contents)?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn write_secure(
-    path: &std::path::Path,
-    contents: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn write_secure(path: &std::path::Path, contents: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(path, contents)?;
     Ok(())
 }
@@ -104,16 +100,10 @@ fn write_secure(
 #[cfg(unix)]
 fn create_secure_dir(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::DirBuilderExt;
+    // An existing directory is left alone: CP2_CONFIG may point into a shared
+    // directory (e.g. $HOME or /tmp), and the file itself is always 0600.
     if !path.exists() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(path)?;
-    } else {
-        // Tighten permissions on an existing directory in case it was created
-        // earlier with a looser umask.
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)?;
     }
     Ok(())
 }

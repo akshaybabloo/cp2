@@ -1,14 +1,15 @@
 use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
+use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
-use aws_sdk_s3::Client;
 use indicatif::ProgressBar;
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
 use crate::config::RemoteConfig;
+use crate::utils::source_name;
 
 /// Files below this threshold are uploaded with a single PutObject call.
 /// Files at or above it use multipart upload.
@@ -44,9 +45,7 @@ pub fn pick_part_size(file_size: u64) -> Result<u64, String> {
 }
 
 /// Builds an [`aws_sdk_s3::Client`] from a [`RemoteConfig`].
-pub async fn create_client(
-    config: &RemoteConfig,
-) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn create_client(config: &RemoteConfig) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
     let access_key = config
         .access_key_id
         .as_deref()
@@ -62,10 +61,7 @@ pub async fn create_client(
 
     let credentials = Credentials::new(access_key, secret_key, None, None, "cp2");
 
-    let region_str = config
-        .region
-        .clone()
-        .unwrap_or_else(|| "us-east-1".to_string());
+    let region_str = config.region.clone().unwrap_or_else(|| "us-east-1".to_string());
     let region = aws_config::Region::new(region_str);
 
     let sdk_config = aws_config::defaults(BehaviorVersion::latest())
@@ -77,10 +73,7 @@ pub async fn create_client(
     let s3_builder = aws_sdk_s3::config::Builder::from(&sdk_config);
 
     let s3_config = match config.endpoint.as_deref() {
-        Some(ep) if !ep.is_empty() => s3_builder
-            .endpoint_url(ep)
-            .force_path_style(true)
-            .build(),
+        Some(ep) if !ep.is_empty() => s3_builder.endpoint_url(ep).force_path_style(true).build(),
         _ => s3_builder.build(),
     };
 
@@ -110,13 +103,13 @@ pub async fn collect_s3_upload_entries(
         format!("{}/", key_prefix.trim_end_matches('/'))
     };
 
-    let meta = tokio::fs::symlink_metadata(source).await?;
+    // Follow a symlink given as the source itself; symlinks found while
+    // walking a directory are still skipped.
+    let meta = tokio::fs::metadata(source).await?;
 
     if meta.file_type().is_file() {
-        let file_name = source
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or("source has no file name")?;
+        let file_name = source_name(source).await?;
+        let file_name = file_name.to_str().ok_or("non-UTF-8 path")?;
         let key = format!("{}{}", prefix, file_name);
         let size = meta.len();
         entries.push(S3UploadEntry {
@@ -128,14 +121,16 @@ pub async fn collect_s3_upload_entries(
     }
 
     if meta.file_type().is_dir() {
-        let dir_name = source
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or("source has no directory name")?;
+        let dir_name = source_name(source).await?;
+        let dir_name = dir_name.to_str().ok_or("non-UTF-8 path")?;
 
         let mut stack = vec![source.to_path_buf()];
         while let Some(p) = stack.pop() {
-            let m = tokio::fs::symlink_metadata(&p).await?;
+            let m = if p == source {
+                tokio::fs::metadata(&p).await?
+            } else {
+                tokio::fs::symlink_metadata(&p).await?
+            };
             if m.file_type().is_dir() {
                 let mut dir_entries = tokio::fs::read_dir(&p).await?;
                 while let Some(entry) = dir_entries.next_entry().await? {
@@ -144,19 +139,12 @@ pub async fn collect_s3_upload_entries(
             } else if m.file_type().is_file() {
                 let relative = p.strip_prefix(source)?;
                 // Convert path separators to '/' for S3 keys.
-                let rel_str = relative
-                    .to_str()
-                    .ok_or("non-UTF-8 path")?
-                    .replace('\\', "/");
+                let rel_str = relative.to_str().ok_or("non-UTF-8 path")?.replace('\\', "/");
                 let key = format!("{}{}/{}", prefix, dir_name, rel_str);
                 let size = m.len();
                 total_count += 1;
                 total_size += size;
-                entries.push(S3UploadEntry {
-                    from: p,
-                    key,
-                    size,
-                });
+                entries.push(S3UploadEntry { from: p, key, size });
             } else if m.file_type().is_symlink() {
                 log::warn!("skipping symlink: {}", p.display());
             } else {
@@ -200,13 +188,7 @@ async fn upload_single(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let body = ByteStream::from_path(from).await?;
 
-    client
-        .put_object()
-        .bucket(bucket)
-        .key(key)
-        .body(body)
-        .send()
-        .await?;
+    client.put_object().bucket(bucket).key(key).body(body).send().await?;
 
     if let Some(pb) = file_pb {
         pb.inc(file_size);
@@ -230,72 +212,69 @@ async fn upload_multipart(
     main_pb: Option<&ProgressBar>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initiate multipart upload.
-    let create_resp = client
-        .create_multipart_upload()
-        .bucket(bucket)
-        .key(key)
-        .send()
-        .await?;
+    let create_resp = client.create_multipart_upload().bucket(bucket).key(key).send().await?;
 
     let upload_id = create_resp
         .upload_id()
         .ok_or("S3 did not return an upload ID")?
         .to_string();
 
+    let result = upload_parts(client, from, bucket, key, &upload_id, part_size, file_pb, main_pb).await;
+    if result.is_err() {
+        abort_multipart(client, bucket, key, &upload_id).await;
+    }
+    result
+}
+
+/// Uploads every part of `from` and completes the multipart upload. Any error
+/// is returned to the caller, which is responsible for aborting the upload.
+#[allow(clippy::too_many_arguments)]
+async fn upload_parts(
+    client: &Client,
+    from: &Path,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+    part_size: u64,
+    file_pb: Option<&ProgressBar>,
+    main_pb: Option<&ProgressBar>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut file = File::open(from).await?;
     let part_size_usize: usize = part_size
         .try_into()
         .map_err(|_| "part size does not fit in usize on this platform")?;
-    let mut buf = vec![0u8; part_size_usize];
     let mut completed_parts: Vec<CompletedPart> = Vec::new();
     let mut part_number = 1i32;
 
     loop {
+        // A fresh buffer per part lets it move into the request body without
+        // a copy.
+        let mut buf = vec![0u8; part_size_usize];
         let bytes_read = read_at_least(&mut file, &mut buf).await?;
         if bytes_read == 0 {
             break;
         }
-
-        let data = buf[..bytes_read].to_vec();
+        buf.truncate(bytes_read);
         let chunk_len = bytes_read as u64;
 
-        let part_result = client
+        let resp = client
             .upload_part()
             .bucket(bucket)
             .key(key)
-            .upload_id(&upload_id)
+            .upload_id(upload_id)
             .part_number(part_number)
-            .body(ByteStream::from(data))
+            .body(ByteStream::from(buf))
             .send()
-            .await;
+            .await?;
 
-        match part_result {
-            Ok(resp) => {
-                let etag = match resp.e_tag() {
-                    Some(v) => v.to_string(),
-                    None => {
-                        abort_multipart(client, bucket, key, &upload_id).await;
-                        return Err("S3 upload_part response missing ETag".into());
-                    }
-                };
-                completed_parts.push(
-                    CompletedPart::builder()
-                        .part_number(part_number)
-                        .e_tag(etag)
-                        .build(),
-                );
+        let etag = resp.e_tag().ok_or("S3 upload_part response missing ETag")?.to_string();
+        completed_parts.push(CompletedPart::builder().part_number(part_number).e_tag(etag).build());
 
-                if let Some(pb) = file_pb {
-                    pb.inc(chunk_len);
-                }
-                if let Some(pb) = main_pb {
-                    pb.inc(chunk_len);
-                }
-            }
-            Err(e) => {
-                abort_multipart(client, bucket, key, &upload_id).await;
-                return Err(e.into());
-            }
+        if let Some(pb) = file_pb {
+            pb.inc(chunk_len);
+        }
+        if let Some(pb) = main_pb {
+            pb.inc(chunk_len);
         }
 
         part_number += 1;
@@ -305,18 +284,14 @@ async fn upload_multipart(
         .set_parts(Some(completed_parts))
         .build();
 
-    if let Err(e) = client
+    client
         .complete_multipart_upload()
         .bucket(bucket)
         .key(key)
-        .upload_id(&upload_id)
+        .upload_id(upload_id)
         .multipart_upload(completed)
         .send()
-        .await
-    {
-        abort_multipart(client, bucket, key, &upload_id).await;
-        return Err(e.into());
-    }
+        .await?;
 
     Ok(())
 }
@@ -335,10 +310,7 @@ async fn abort_multipart(client: &Client, bucket: &str, key: &str, upload_id: &s
 
 /// Reads up to `buf.len()` bytes from `file`, filling the buffer as much as
 /// possible before returning.  Returns 0 only at EOF.
-async fn read_at_least(
-    file: &mut File,
-    buf: &mut [u8],
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+async fn read_at_least(file: &mut File, buf: &mut [u8]) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let mut total = 0;
     while total < buf.len() {
         let n = file.read(&mut buf[total..]).await?;

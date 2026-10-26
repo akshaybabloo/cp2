@@ -1,5 +1,5 @@
 use crate::copy::copy_file_with_dual_progress;
-use crate::utils::{collect_copy_entries, trim_filename, CopyEntry};
+use crate::utils::{CopyEntry, collect_copy_entries, trim_filename};
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashSet;
@@ -18,7 +18,7 @@ pub(crate) async fn run(
 ) {
     if !destination.exists() {
         log::debug!("Destination path does not exist: {}", destination.display());
-        println!(
+        eprintln!(
             "{} {}",
             "Destination path does not exist: ".red(),
             destination.display().to_string().red()
@@ -26,11 +26,8 @@ pub(crate) async fn run(
         std::process::exit(1);
     }
     if !destination.is_dir() {
-        log::debug!(
-            "Destination path is not a directory: {}",
-            destination.display()
-        );
-        println!(
+        log::debug!("Destination path is not a directory: {}", destination.display());
+        eprintln!(
             "{} {}",
             "Destination path is not a directory: ".red(),
             destination.display().to_string().red()
@@ -45,11 +42,7 @@ pub(crate) async fn run(
     for source_str in &sources {
         let source = Path::new(source_str);
         if !source.exists() {
-            eprintln!(
-                "{} {}",
-                "Source path does not exist:".red(),
-                source_str.red()
-            );
+            eprintln!("{} {}", "Source path does not exist:".red(), source_str.red());
             has_errors = true;
             continue;
         }
@@ -113,20 +106,12 @@ pub(crate) async fn run(
         std::process::exit(1);
     }
 
-    log::info!(
-        "Total files to copy: {}, total size: {}",
-        all_entries.len(),
-        total_size
-    );
+    log::info!("Total files to copy: {}, total size: {}", all_entries.len(), total_size);
 
     // Create destination directories upfront.
     for dir in &all_dirs {
         if let Err(e) = tokio::fs::create_dir_all(dir).await {
-            eprintln!(
-                "{} {}",
-                "Error creating directory:".red(),
-                e.to_string().red()
-            );
+            eprintln!("{} {}", "Error creating directory:".red(), e.to_string().red());
             std::process::exit(1);
         }
     }
@@ -158,23 +143,14 @@ pub(crate) async fn run(
         let has_failed_clone = Arc::clone(&has_failed);
 
         tasks.push(tokio::spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .expect("failed to acquire semaphore permit");
+            let _permit = sem.acquire().await.expect("failed to acquire semaphore permit");
 
             let file_pb = if let Some(ref multi) = multi_clone {
-                let file_name = entry
-                    .from
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown");
+                let file_name = entry.from.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
                 let pb = multi.add(ProgressBar::new(entry.size));
                 pb.set_style(
                     ProgressStyle::default_bar()
-                        .template(
-                            "  {spinner:.green} {msg:<30} [{wide_bar:.yellow/blue}] {bytes}/{total_bytes}",
-                        )
+                        .template("  {spinner:.green} {msg:<30} [{wide_bar:.yellow/blue}] {bytes}/{total_bytes}")
                         .unwrap()
                         .progress_chars("=>-"),
                 );
@@ -185,14 +161,8 @@ pub(crate) async fn run(
                 None
             };
 
-            match copy_file_with_dual_progress(
-                &entry.from,
-                &entry.to,
-                file_pb.as_ref(),
-                main_pb_clone.as_deref(),
-                sync,
-            )
-            .await
+            match copy_file_with_dual_progress(&entry.from, &entry.to, file_pb.as_ref(), main_pb_clone.as_deref(), sync)
+                .await
             {
                 Ok(_) => {
                     if let Some(ref pb) = file_pb {

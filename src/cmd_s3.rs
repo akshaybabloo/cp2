@@ -58,11 +58,7 @@ pub(crate) async fn run(
     for source_str in &sources {
         let source = Path::new(source_str);
         if !source.exists() {
-            eprintln!(
-                "{} {}",
-                "Source path does not exist:".red(),
-                source_str.red()
-            );
+            eprintln!("{} {}", "Source path does not exist:".red(), source_str.red());
             has_errors = true;
             continue;
         }
@@ -143,23 +139,14 @@ pub(crate) async fn run(
         let has_failed_clone = Arc::clone(&has_failed);
 
         tasks.push(tokio::spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .expect("failed to acquire semaphore permit");
+            let _permit = sem.acquire().await.expect("failed to acquire semaphore permit");
 
             let file_pb = if let Some(ref multi) = multi_clone {
-                let file_name = entry
-                    .from
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown");
+                let file_name = entry.from.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
                 let pb = multi.add(ProgressBar::new(entry.size));
                 pb.set_style(
                     ProgressStyle::default_bar()
-                        .template(
-                            "  {spinner:.green} {msg:<30} [{wide_bar:.yellow/blue}] {bytes}/{total_bytes}",
-                        )
+                        .template("  {spinner:.green} {msg:<30} [{wide_bar:.yellow/blue}] {bytes}/{total_bytes}")
                         .unwrap()
                         .progress_chars("=>-"),
                 );

@@ -36,8 +36,10 @@ pub async fn copy_file_with_dual_progress(
         }
     }
 
+    // Always flush: tokio completes writes in the background, and an error
+    // from the final write only surfaces here.
+    dest.flush().await?;
     if sync {
-        dest.flush().await?;
         dest.sync_all().await?;
     }
 

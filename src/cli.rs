@@ -70,8 +70,7 @@ pub(crate) enum ConfigAction {
 impl Args {
     fn command_with_dynamic_parallel() -> clap::Command {
         let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        Args::command()
-            .mut_arg("parallel", move |arg| arg.help(format!("Parallel level (max: {max})")))
+        Args::command().mut_arg("parallel", move |arg| arg.help(format!("Parallel level (max: {max})")))
     }
 }
 
@@ -130,15 +129,14 @@ pub fn parse_destination(dest: &str) -> Destination {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 pub async fn run() {
-    let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    log::debug!("Max parallel level (number of CPU cores): {}", max);
     let matches = Args::command_with_dynamic_parallel().get_matches();
     let args = Args::from_arg_matches(&matches).expect("parse args");
-    log::debug!("Parsed args: {:#?}", args);
 
-    env_logger::Builder::new()
-        .filter_level(args.verbosity.into())
-        .init();
+    env_logger::Builder::new().filter_level(args.verbosity.into()).init();
+
+    let max = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    log::debug!("Max parallel level (number of CPU cores): {}", max);
+    log::debug!("Parsed args: {:#?}", args);
 
     if let Some(Command::Config { action }) = args.command {
         cmd_config::run(action);
@@ -157,15 +155,7 @@ pub async fn run() {
 
     match parse_destination(&destination) {
         Destination::Local(dest_path) => {
-            cmd_local::run(
-                args.source,
-                dest_path,
-                args.recursive,
-                args.sync,
-                parallel,
-                is_quiet,
-            )
-            .await;
+            cmd_local::run(args.source, dest_path, args.recursive, args.sync, parallel, is_quiet).await;
         }
         Destination::S3 {
             remote_name,
