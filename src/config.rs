@@ -56,9 +56,9 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
 }
 
 /// Persists the configuration map to disk, creating the directory if needed.
-/// On unix, the file is created with mode 0600 from the start (and an existing
-/// file is tightened to 0600) so the plaintext credentials are not readable by
-/// other users.
+/// On unix, the file is written atomically with mode 0600 so the plaintext
+/// credentials are never readable by other users and a failed save leaves the
+/// previous config intact.
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
@@ -74,21 +74,51 @@ pub fn get_remote<'a>(config: &'a Config, name: &str) -> Option<&'a RemoteConfig
     config.get(name)
 }
 
+/// Writes `contents` to a new 0600 file next to `path`, then renames it over
+/// `path`. The existing config is untouched unless the whole write succeeds.
 #[cfg(unix)]
 fn write_secure(path: &std::path::Path, contents: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
-    // `mode` only applies when the file is created; tighten an existing file
-    // too.
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    f.write_all(contents)?;
-    Ok(())
+
+    // Write through a symlinked config (e.g. one managed in a dotfiles repo)
+    // rather than replacing the link.
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+
+    // In a world-writable directory without the sticky bit, another user
+    // could replace the config after it is written.
+    let mode = std::fs::metadata(parent)?.permissions().mode();
+    if mode & 0o002 != 0 && mode & 0o1000 == 0 {
+        return Err(format!(
+            "refusing to write the config: {} is writable by all users",
+            parent.display()
+        )
+        .into());
+    }
+
+    let file_name = path
+        .file_name()
+        .ok_or("config path has no file name")?
+        .to_string_lossy();
+    let tmp = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(contents)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(result?)
 }
 
 #[cfg(not(unix))]

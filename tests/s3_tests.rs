@@ -156,6 +156,51 @@ fn test_config_save_tightens_existing_file_but_not_parent_dir() {
     assert_eq!(dir_mode, 0o755, "an existing parent directory must not be changed");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_config_save_rejects_world_writable_dir() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let shared = tmp.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+    let config_path = shared.join("config.toml");
+    fs::write(&config_path, "[keep]\ntype = \"s3\"\n").unwrap();
+    let _guard = ConfigEnvGuard::set(&config_path);
+
+    assert!(cp2::config::save_config(&cp2::config::Config::new()).is_err());
+    assert!(fs::read_to_string(&config_path).unwrap().contains("[keep]"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_config_save_writes_through_symlink() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().join("real.toml");
+    fs::write(&real, "").unwrap();
+    let link = tmp.path().join("config.toml");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let _guard = ConfigEnvGuard::set(&link);
+
+    let mut cfg = cp2::config::Config::new();
+    cfg.insert(
+        "x".to_string(),
+        cp2::config::RemoteConfig {
+            remote_type: "s3".to_string(),
+            provider: None,
+            access_key_id: None,
+            secret_access_key: None,
+            region: None,
+            endpoint: None,
+        },
+    );
+    cp2::config::save_config(&cfg).expect("save");
+
+    assert!(link.is_symlink(), "the symlink itself must not be replaced");
+    assert!(fs::read_to_string(&real).unwrap().contains("[x]"));
+}
+
 #[test]
 fn test_config_get_remote_present() {
     let mut cfg = cp2::config::Config::new();
