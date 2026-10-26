@@ -59,10 +59,7 @@ fn create(name: &str, force: bool) {
     };
 
     if cfg.contains_key(name) && !force {
-        let answer = prompt(
-            &format!("Remote \"{}\" already exists. Overwrite? [y/N]", name),
-            "N",
-        );
+        let answer = prompt(&format!("Remote \"{}\" already exists. Overwrite? [y/N]", name), "");
         if !answer.eq_ignore_ascii_case("y") && !answer.eq_ignore_ascii_case("yes") {
             println!("Aborted.");
             return;
@@ -98,11 +95,7 @@ fn create(name: &str, force: bool) {
             access_key_id: Some(access_key_id),
             secret_access_key: Some(secret_access_key),
             region: Some(region),
-            endpoint: if endpoint.is_empty() {
-                None
-            } else {
-                Some(endpoint)
-            },
+            endpoint: if endpoint.is_empty() { None } else { Some(endpoint) },
         },
     );
 
@@ -167,10 +160,7 @@ fn delete(name: &str, force: bool) {
     }
 
     if !force {
-        let answer = prompt(
-            &format!("Delete remote \"{}\"? [y/N]", name),
-            "N",
-        );
+        let answer = prompt(&format!("Delete remote \"{}\"? [y/N]", name), "");
         if !answer.eq_ignore_ascii_case("y") && !answer.eq_ignore_ascii_case("yes") {
             println!("Aborted.");
             return;

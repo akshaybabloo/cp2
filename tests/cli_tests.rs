@@ -191,16 +191,9 @@ fn test_copy_file_with_spaces_in_name() {
     let file = tmp_dir.path().join("my file name.txt");
     File::create(&file).unwrap().write_all(b"spaced").unwrap();
 
-    Command::new(cargo_bin!("cp2"))
-        .arg(&file)
-        .arg(&dest)
-        .assert()
-        .success();
+    Command::new(cargo_bin!("cp2")).arg(&file).arg(&dest).assert().success();
 
-    assert_eq!(
-        fs::read_to_string(dest.join("my file name.txt")).unwrap(),
-        "spaced"
-    );
+    assert_eq!(fs::read_to_string(dest.join("my file name.txt")).unwrap(), "spaced");
 }
 
 #[test]
@@ -226,14 +219,8 @@ fn test_copy_deeply_nested_directory() {
         .success();
 
     let copied = dest.join("source");
-    assert_eq!(
-        fs::read_to_string(copied.join("a/b/c/d/deep.txt")).unwrap(),
-        "deep"
-    );
-    assert_eq!(
-        fs::read_to_string(copied.join("a/b/sibling.txt")).unwrap(),
-        "sibling"
-    );
+    assert_eq!(fs::read_to_string(copied.join("a/b/c/d/deep.txt")).unwrap(), "deep");
+    assert_eq!(fs::read_to_string(copied.join("a/b/sibling.txt")).unwrap(), "sibling");
     assert_eq!(fs::read_to_string(copied.join("top.txt")).unwrap(), "top");
 }
 
@@ -274,10 +261,7 @@ fn test_copy_with_sync_flag() {
         .assert()
         .success();
 
-    assert_eq!(
-        fs::read_to_string(dest.join("sync_test.txt")).unwrap(),
-        "synced data"
-    );
+    assert_eq!(fs::read_to_string(dest.join("sync_test.txt")).unwrap(), "synced data");
 }
 
 #[test]
@@ -291,11 +275,7 @@ fn test_copy_preserves_binary_content() {
     let file = tmp_dir.path().join("binary.bin");
     File::create(&file).unwrap().write_all(&binary_data).unwrap();
 
-    Command::new(cargo_bin!("cp2"))
-        .arg(&file)
-        .arg(&dest)
-        .assert()
-        .success();
+    Command::new(cargo_bin!("cp2")).arg(&file).arg(&dest).assert().success();
 
     let mut result = Vec::new();
     File::open(dest.join("binary.bin"))
@@ -337,7 +317,7 @@ fn test_non_existent_destination_fails() {
         .arg(tmp_dir.path().join("no_such_dest"))
         .assert()
         .failure()
-        .stdout(predicate::str::contains("Destination path does not exist"));
+        .stderr(predicate::str::contains("Destination path does not exist"));
 }
 
 #[test]
@@ -398,7 +378,153 @@ fn test_copy_dir_into_itself_fails() {
         .arg(&source)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("cannot copy a directory into itself").or(
-            predicate::str::contains("same directory"),
-        ));
+        .stderr(
+            predicate::str::contains("cannot copy a directory into itself")
+                .or(predicate::str::contains("same directory")),
+        );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_copy_symlink_source_follows_link() {
+    let tmp_dir = TempDir::new().unwrap();
+    let real = tmp_dir.path().join("real.txt");
+    File::create(&real).unwrap().write_all(b"content").unwrap();
+    let link = tmp_dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    let mut cmd = Command::new(cargo_bin!("cp2"));
+    cmd.arg(&link).arg(&dest_path);
+    cmd.assert().success();
+
+    let copied = dest_path.join("link.txt");
+    assert!(!copied.is_symlink());
+    assert_eq!(fs::read_to_string(copied).unwrap(), "content");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_copy_symlinked_dir_source_recursive() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = create_test_src(&tmp_dir, &[("a.txt", b"a"), ("sub/b.txt", b"b")]);
+    let link = tmp_dir.path().join("linkdir");
+    std::os::unix::fs::symlink(&source, &link).unwrap();
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    let mut cmd = Command::new(cargo_bin!("cp2"));
+    cmd.arg("-r").arg(&link).arg(&dest_path);
+    cmd.assert().success();
+
+    assert_dirs_equal(&source, &dest_path.join("linkdir"));
+}
+
+#[test]
+fn test_copy_dot_source_recursive() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = create_test_src(&tmp_dir, &[("a.txt", b"a"), ("sub/b.txt", b"b")]);
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    let mut cmd = Command::new(cargo_bin!("cp2"));
+    cmd.current_dir(&source).arg("-r").arg(".").arg(&dest_path);
+    cmd.assert().success();
+
+    assert_dirs_equal(&source, &dest_path.join("source"));
+}
+
+#[test]
+fn test_copy_preserves_mtime_and_permissions() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = tmp_dir.path().join("script.sh");
+    File::create(&source).unwrap().write_all(b"#!/bin/sh\n").unwrap();
+    let mtime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    File::options()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o750)).unwrap();
+    }
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    Command::new(cargo_bin!("cp2"))
+        .arg(&source)
+        .arg(&dest_path)
+        .assert()
+        .success();
+
+    let copied = fs::metadata(dest_path.join("script.sh")).unwrap();
+    assert_eq!(copied.modified().unwrap(), mtime);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(copied.permissions().mode() & 0o777, 0o750);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_recopy_over_read_only_destination() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp_dir = TempDir::new().unwrap();
+    let source = tmp_dir.path().join("object");
+    File::create(&source).unwrap().write_all(b"v1").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o444)).unwrap();
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    // The first copy leaves a read-only file; the second must replace it.
+    for _ in 0..2 {
+        Command::new(cargo_bin!("cp2"))
+            .arg(&source)
+            .arg(&dest_path)
+            .assert()
+            .success();
+    }
+
+    let copied = dest_path.join("object");
+    assert_eq!(fs::read_to_string(&copied).unwrap(), "v1");
+    assert_eq!(fs::metadata(&copied).unwrap().permissions().mode() & 0o777, 0o444);
+}
+
+#[test]
+fn test_verbose_lists_copied_files() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = create_test_src(&tmp_dir, &[("a.txt", b"a"), ("sub/b.txt", b"b")]);
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    Command::new(cargo_bin!("cp2"))
+        .arg("-r")
+        .arg("-v")
+        .arg(&source)
+        .arg(&dest_path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("a.txt ->").and(predicate::str::contains("b.txt ->")));
+}
+
+#[test]
+fn test_default_does_not_list_copied_files() {
+    let tmp_dir = TempDir::new().unwrap();
+    let source = create_test_src(&tmp_dir, &[("a.txt", b"a")]);
+    let dest_path = tmp_dir.path().join("dest");
+    fs::create_dir(&dest_path).unwrap();
+
+    Command::new(cargo_bin!("cp2"))
+        .arg("-r")
+        .arg(&source)
+        .arg(&dest_path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("->").not());
 }

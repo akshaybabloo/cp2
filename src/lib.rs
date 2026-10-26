@@ -7,3 +7,4 @@ pub mod utils;
 pub(crate) mod cmd_config;
 pub(crate) mod cmd_local;
 pub(crate) mod cmd_s3;
+pub(crate) mod transfer;

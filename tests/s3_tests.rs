@@ -134,6 +134,73 @@ fn test_config_file_is_chmod_600() {
     assert_eq!(mode, 0o600, "config file must be readable only by the owner");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_config_save_tightens_existing_file_but_not_parent_dir() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let shared = tmp.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+    let config_path = shared.join("config.toml");
+    fs::write(&config_path, "").unwrap();
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o644)).unwrap();
+    let _guard = ConfigEnvGuard::set(&config_path);
+
+    cp2::config::save_config(&cp2::config::Config::new()).expect("save");
+
+    let file_mode = fs::metadata(&config_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(file_mode, 0o600, "existing config file must be tightened");
+    let dir_mode = fs::metadata(&shared).unwrap().permissions().mode() & 0o777;
+    assert_eq!(dir_mode, 0o755, "an existing parent directory must not be changed");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_config_save_rejects_world_writable_dir() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let shared = tmp.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+    let config_path = shared.join("config.toml");
+    fs::write(&config_path, "[keep]\ntype = \"s3\"\n").unwrap();
+    let _guard = ConfigEnvGuard::set(&config_path);
+
+    assert!(cp2::config::save_config(&cp2::config::Config::new()).is_err());
+    assert!(fs::read_to_string(&config_path).unwrap().contains("[keep]"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_config_save_writes_through_symlink() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().join("real.toml");
+    fs::write(&real, "").unwrap();
+    let link = tmp.path().join("config.toml");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let _guard = ConfigEnvGuard::set(&link);
+
+    let mut cfg = cp2::config::Config::new();
+    cfg.insert(
+        "x".to_string(),
+        cp2::config::RemoteConfig {
+            remote_type: "s3".to_string(),
+            provider: None,
+            access_key_id: None,
+            secret_access_key: None,
+            region: None,
+            endpoint: None,
+        },
+    );
+    cp2::config::save_config(&cfg).expect("save");
+
+    assert!(link.is_symlink(), "the symlink itself must not be replaced");
+    assert!(fs::read_to_string(&real).unwrap().contains("[x]"));
+}
+
 #[test]
 fn test_config_get_remote_present() {
     let mut cfg = cp2::config::Config::new();
@@ -174,8 +241,7 @@ async fn test_s3_entries_single_file_with_prefix() {
     let file = tmp.path().join("report.csv");
     File::create(&file).unwrap().write_all(b"a,b").unwrap();
 
-    let (entries, _count, _size) =
-        cp2::s3::collect_s3_upload_entries(&file, "uploads/2024").await.unwrap();
+    let (entries, _count, _size) = cp2::s3::collect_s3_upload_entries(&file, "uploads/2024").await.unwrap();
 
     assert_eq!(entries[0].key, "uploads/2024/report.csv");
 }
@@ -187,8 +253,9 @@ async fn test_s3_entries_single_file_prefix_trailing_slash() {
     File::create(&file).unwrap().write_all(b"data").unwrap();
 
     // Trailing slash on prefix should be normalised.
-    let (entries, _count, _size) =
-        cp2::s3::collect_s3_upload_entries(&file, "media/images/").await.unwrap();
+    let (entries, _count, _size) = cp2::s3::collect_s3_upload_entries(&file, "media/images/")
+        .await
+        .unwrap();
 
     assert_eq!(entries[0].key, "media/images/img.png");
 }
@@ -200,10 +267,12 @@ async fn test_s3_entries_directory() {
     fs::create_dir(&src).unwrap();
     File::create(src.join("a.txt")).unwrap().write_all(b"1").unwrap();
     fs::create_dir(src.join("sub")).unwrap();
-    File::create(src.join("sub").join("b.txt")).unwrap().write_all(b"22").unwrap();
+    File::create(src.join("sub").join("b.txt"))
+        .unwrap()
+        .write_all(b"22")
+        .unwrap();
 
-    let (entries, count, size) =
-        cp2::s3::collect_s3_upload_entries(&src, "backup").await.unwrap();
+    let (entries, count, size) = cp2::s3::collect_s3_upload_entries(&src, "backup").await.unwrap();
 
     assert_eq!(count, 2);
     assert_eq!(size, 3);
@@ -220,8 +289,37 @@ async fn test_s3_entries_directory_no_prefix() {
     fs::create_dir(&src).unwrap();
     File::create(src.join("logo.svg")).unwrap().write_all(b"svg").unwrap();
 
-    let (entries, _count, _size) =
-        cp2::s3::collect_s3_upload_entries(&src, "").await.unwrap();
+    let (entries, _count, _size) = cp2::s3::collect_s3_upload_entries(&src, "").await.unwrap();
+
+    assert_eq!(entries[0].key, "assets/logo.svg");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3_entries_symlink_source_is_followed() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().join("real.txt");
+    File::create(&real).unwrap().write_all(b"hello").unwrap();
+    let link = tmp.path().join("link.txt");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let (entries, count, size) = cp2::s3::collect_s3_upload_entries(&link, "").await.unwrap();
+
+    assert_eq!(count, 1);
+    assert_eq!(size, 5);
+    assert_eq!(entries[0].key, "link.txt");
+}
+
+#[tokio::test]
+async fn test_s3_entries_dot_dot_source_uses_resolved_name() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("assets");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    File::create(src.join("logo.svg")).unwrap().write_all(b"svg").unwrap();
+
+    let (entries, _count, _size) = cp2::s3::collect_s3_upload_entries(&src.join("sub").join(".."), "")
+        .await
+        .unwrap();
 
     assert_eq!(entries[0].key, "assets/logo.svg");
 }

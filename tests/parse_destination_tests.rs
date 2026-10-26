@@ -1,13 +1,10 @@
 /// Tests for `cp2::cli::parse_destination`.
-use cp2::cli::{parse_destination, Destination};
+use cp2::cli::{Destination, parse_destination};
 use std::path::PathBuf;
 
 #[test]
 fn local_relative_path() {
-    assert_eq!(
-        parse_destination("./out"),
-        Destination::Local(PathBuf::from("./out")),
-    );
+    assert_eq!(parse_destination("./out"), Destination::Local(PathBuf::from("./out")),);
 }
 
 #[test]
@@ -62,10 +59,7 @@ fn s3_remote_with_prefix() {
 
 #[test]
 fn empty_bucket_falls_back_to_local() {
-    assert_eq!(
-        parse_destination("myaws:"),
-        Destination::Local(PathBuf::from("myaws:")),
-    );
+    assert_eq!(parse_destination("myaws:"), Destination::Local(PathBuf::from("myaws:")),);
 }
 
 #[test]

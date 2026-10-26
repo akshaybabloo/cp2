@@ -1,6 +1,6 @@
 [package]
 name = "cp2"
-version = "0.2.0"
+version = "0.0.0"
 edition = "2024"
 
 [dependencies]
@@ -13,6 +13,7 @@ colored = { version = "3.0.0", features = ["no-color"] }
 dirs = "7"
 env_logger = "0.11.8"
 indicatif = { version = "0.18.0", features = ["tokio"] }
+indicatif-log-bridge = "0.2.3"
 log = "0.4.28"
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }

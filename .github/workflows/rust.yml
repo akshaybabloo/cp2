@@ -67,6 +67,19 @@ jobs:
           rustup target add ${{ matrix.target }}
           rustup default ${{ env.RUST_CHANNEL }}
 
+      - name: Install cargo-edit
+        if: github.ref_type == 'tag'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      - name: Set version from tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: cargo set-version "${TAG#v}"
+
       - name: Run tests
         run: cargo test --target ${{ matrix.target }}
 
