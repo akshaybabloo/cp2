@@ -1,6 +1,6 @@
 # cp2
 
-`cp2` is a CLI tool to copy files and folders to a destination with a progress bar. It supports both local filesystem copies and uploads to S3-compatible object storage (AWS S3, MinIO, DigitalOcean Spaces, etc.).
+`cp2` is a CLI tool to copy files and folders to a destination with a progress bar. It supports local filesystem copies, uploads to other machines over SFTP (using your system's OpenSSH client), and uploads to S3-compatible object storage (AWS S3, MinIO, DigitalOcean Spaces, etc.).
 
 ## Installation
 
@@ -37,6 +37,40 @@ Similar to default `cp` tool, recursive file copy is disabled. You can also use 
 ```bash
 cp2 -r <source_directory> <destination>
 ```
+
+## SFTP Support
+
+> [!NOTE]
+> `cp2` relies on your system's `ssh` client for SFTP connections. Install OpenSSH if it is not already available on your system.
+
+`cp2` can upload files and directories to any machine running an OpenSSH server (`openssh-server`), which has SFTP enabled by default. It uses your system's `ssh` client to connect, so everything you have already set up for `ssh` works unchanged:
+
+- host aliases, `User`, `Port` and `IdentityFile` from `~/.ssh/config`
+- ssh-agent and hardware or 1Password SSH keys
+- `ProxyJump` / bastion hosts
+- `known_hosts` checks and the usual host-key prompt
+- connection sharing with `ControlMaster`
+
+No `cp2 config` setup is needed. Use `<host>:<path>` as the destination, where `<host>` is anything `ssh` accepts:
+
+```bash
+# Upload a file to /srv/backups on a host from ~/.ssh/config
+cp2 file.txt myserver:/srv/backups
+
+# user@host works too; a relative path is relative to the login directory
+cp2 a.txt b.txt me@192.168.1.20:uploads
+
+# Upload a directory recursively into the login directory
+cp2 -r my-folder myserver:
+```
+
+The destination directory must already exist; subdirectories are created as needed. Uploaded files keep their permissions and modification times.
+
+With `-p`, `cp2` opens one SSH connection per parallel upload, which also avoids the throughput limit of a single SSH connection on slow or long-distance links. If you log in with a password rather than a key, you will be asked once per connection; use ssh-agent or `ControlMaster` to avoid that.
+
+If a name is both a configured S3 remote and an SSH host, the S3 remote wins.
+
+To use a different `ssh` program, set `CP2_SSH`, e.g. `CP2_SSH=/usr/local/bin/ssh`.
 
 ## S3 Support
 
