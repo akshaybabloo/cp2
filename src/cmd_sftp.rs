@@ -4,8 +4,7 @@ use crate::transfer::{self, Progress};
 use colored::Colorize;
 use indicatif::MultiProgress;
 use std::collections::{BTreeSet, HashSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Runs an SFTP upload of the given sources to `path` on `host`.
 pub(crate) async fn run(
@@ -85,7 +84,9 @@ pub(crate) async fn run(
         connections.push(connect_or_exit(&host).await);
     }
     let sessions: Arc<Vec<_>> = Arc::new(connections.iter().map(|c| Arc::clone(&c.session)).collect());
-    let next = Arc::new(AtomicUsize::new(0));
+    // Indices of sessions not currently uploading, so each upload gets a
+    // connection to itself.
+    let free = Arc::new(Mutex::new((0..sessions.len()).collect::<Vec<_>>()));
 
     let progress = Progress::new(multi, total_size);
     let failed = transfer::run_parallel(
@@ -95,8 +96,12 @@ pub(crate) async fn run(
         "Uploading",
         move |entry: S3UploadEntry, file_pb, main_pb| {
             let sessions = Arc::clone(&sessions);
-            let i = next.fetch_add(1, Ordering::Relaxed) % sessions.len();
+            // `run_parallel` calls this while holding one of `parallel`
+            // permits, and there are at most `parallel` sessions, so one is
+            // always free. The lease returns it when the upload ends.
+            let lease = SessionLease::take(&free);
             async move {
+                let i = lease.index;
                 sftp::upload_file(
                     &sessions[i],
                     &entry.from,
@@ -121,6 +126,33 @@ pub(crate) async fn run(
 
     if has_errors || failed {
         std::process::exit(1);
+    }
+}
+
+/// A session index taken from the free list, returned when dropped (even if
+/// the upload fails or panics).
+struct SessionLease {
+    free: Arc<Mutex<Vec<usize>>>,
+    index: usize,
+}
+
+impl SessionLease {
+    fn take(free: &Arc<Mutex<Vec<usize>>>) -> Self {
+        let index = free
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+            .expect("a session is free while a permit is held");
+        Self {
+            free: Arc::clone(free),
+            index,
+        }
+    }
+}
+
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        self.free.lock().unwrap_or_else(|e| e.into_inner()).push(self.index);
     }
 }
 

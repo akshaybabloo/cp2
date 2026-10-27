@@ -29,6 +29,9 @@ const REQUEST_TIMEOUT_SECS: u64 = 60;
 
 const BUFFER_SIZE: usize = 256 * 1024;
 
+/// How long to wait for `ssh` to exit after the handshake fails.
+const SSH_EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// An SFTP session and the `ssh` process carrying it.
 pub struct SftpConnection {
     pub session: Arc<SftpSession>,
@@ -62,7 +65,9 @@ impl SftpConnection {
             Ok(s) => s,
             Err(e) => {
                 // If ssh itself failed, its own message is already on stderr.
-                if let Ok(Some(status)) = child.try_wait() {
+                // Its stdout can close a moment before it is reapable, so
+                // wait briefly for it to exit.
+                if let Ok(Ok(status)) = tokio::time::timeout(SSH_EXIT_WAIT, child.wait()).await {
                     return Err(format!("ssh to {host} failed ({status}); see the ssh output above").into());
                 }
                 return Err(format!("could not start an SFTP session on {host}: {e}").into());

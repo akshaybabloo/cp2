@@ -42,9 +42,11 @@ fn fake_ssh(dir: &Path) -> Option<PathBuf> {
     Some(script)
 }
 
-fn cp2(ssh: &Path) -> Command {
+/// A cp2 command using `ssh` and a config file inside `tmp`, so the user's
+/// real config (e.g. a remote named `somehost`) can't affect the test.
+fn cp2(tmp: &Path, ssh: &Path) -> Command {
     let mut cmd = Command::new(cargo_bin!("cp2"));
-    cmd.env("CP2_SSH", ssh);
+    cmd.env("CP2_SSH", ssh).env("CP2_CONFIG", tmp.join("config.toml"));
     cmd
 }
 
@@ -74,7 +76,7 @@ fn test_sftp_recursive_upload_keeps_contents_and_metadata() {
     let remote = tmp.path().join("remote");
     fs::create_dir(&remote).unwrap();
 
-    cp2(&ssh)
+    cp2(tmp.path(), &ssh)
         .arg("-r")
         .arg("-p")
         .arg("3")
@@ -103,7 +105,7 @@ fn test_sftp_reupload_over_read_only_file() {
     fs::create_dir(&remote).unwrap();
 
     for _ in 0..2 {
-        cp2(&ssh)
+        cp2(tmp.path(), &ssh)
             .arg(&source)
             .arg(format!("somehost:{}", remote.display()))
             .assert()
@@ -120,7 +122,7 @@ fn test_sftp_missing_destination_fails() {
     let source = tmp.path().join("file.txt");
     File::create(&source).unwrap().write_all(b"x").unwrap();
 
-    cp2(&ssh)
+    cp2(tmp.path(), &ssh)
         .arg(&source)
         .arg(format!("somehost:{}", tmp.path().join("missing").display()))
         .assert()
@@ -134,8 +136,7 @@ fn test_sftp_reports_ssh_failure() {
     let source = tmp.path().join("file.txt");
     File::create(&source).unwrap().write_all(b"x").unwrap();
 
-    Command::new(cargo_bin!("cp2"))
-        .env("CP2_SSH", "false")
+    cp2(tmp.path(), Path::new("false"))
         .arg(&source)
         .arg("somehost:/tmp")
         .assert()
