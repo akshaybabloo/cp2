@@ -1,4 +1,4 @@
-use crate::config;
+use crate::config::RemoteConfig;
 use crate::s3::{self, S3UploadEntry};
 use crate::transfer::{self, Progress};
 use colored::Colorize;
@@ -9,35 +9,13 @@ use std::sync::Arc;
 /// Runs an S3 upload for the given sources.
 pub(crate) async fn run(
     sources: Vec<String>,
-    remote_name: String,
+    remote: RemoteConfig,
     bucket: String,
     prefix: String,
     recursive: bool,
     parallel: usize,
     multi: Option<MultiProgress>,
 ) {
-    // Load and look up the remote config.
-    let cfg = match config::load_config() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{} {}", "Failed to load configuration:".red(), e);
-            std::process::exit(1);
-        }
-    };
-
-    let remote = match config::get_remote(&cfg, &remote_name) {
-        Some(r) => r.clone(),
-        None => {
-            eprintln!(
-                "{} \"{}\"{}",
-                "Remote".red(),
-                remote_name.red(),
-                " not found. Run `cp2 config create <name>` to add it.".red()
-            );
-            std::process::exit(1);
-        }
-    };
-
     // Build S3 client.
     let client = match s3::create_client(&remote).await {
         Ok(c) => Arc::new(c),

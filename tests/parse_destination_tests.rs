@@ -1,5 +1,5 @@
 /// Tests for `cp2::cli::parse_destination`.
-use cp2::cli::{Destination, parse_destination};
+use cp2::cli::{Destination, parse_destination, split_bucket};
 use std::path::PathBuf;
 
 #[test]
@@ -33,33 +33,60 @@ fn http_url_is_local() {
     );
 }
 
-#[test]
-fn s3_remote_with_bucket_only() {
-    assert_eq!(
-        parse_destination("myaws:my-bucket"),
-        Destination::S3 {
-            remote_name: "myaws".to_string(),
-            bucket: "my-bucket".to_string(),
-            prefix: String::new(),
-        },
-    );
+fn remote(name: &str, path: &str) -> Destination {
+    Destination::Remote {
+        name: name.to_string(),
+        path: path.to_string(),
+    }
 }
 
 #[test]
-fn s3_remote_with_prefix() {
+fn remote_with_bucket_only() {
+    assert_eq!(parse_destination("myaws:my-bucket"), remote("myaws", "my-bucket"));
+}
+
+#[test]
+fn remote_with_prefix() {
     assert_eq!(
         parse_destination("myaws:my-bucket/uploads/2024"),
-        Destination::S3 {
-            remote_name: "myaws".to_string(),
-            bucket: "my-bucket".to_string(),
-            prefix: "uploads/2024".to_string(),
-        },
+        remote("myaws", "my-bucket/uploads/2024")
     );
 }
 
 #[test]
-fn empty_bucket_falls_back_to_local() {
-    assert_eq!(parse_destination("myaws:"), Destination::Local(PathBuf::from("myaws:")),);
+fn remote_with_empty_path() {
+    // `host:` is the login directory for SFTP.
+    assert_eq!(parse_destination("myhost:"), remote("myhost", ""));
+}
+
+#[test]
+fn ssh_user_at_host_with_absolute_path() {
+    assert_eq!(
+        parse_destination("me@server:/srv/data"),
+        remote("me@server", "/srv/data")
+    );
+}
+
+#[test]
+fn split_bucket_with_prefix() {
+    assert_eq!(
+        split_bucket("my-bucket/uploads/2024"),
+        Some(("my-bucket".to_string(), "uploads/2024".to_string()))
+    );
+}
+
+#[test]
+fn split_bucket_only() {
+    assert_eq!(
+        split_bucket("my-bucket"),
+        Some(("my-bucket".to_string(), String::new()))
+    );
+}
+
+#[test]
+fn split_bucket_requires_bucket() {
+    assert_eq!(split_bucket(""), None);
+    assert_eq!(split_bucket("/abs/path"), None);
 }
 
 #[test]

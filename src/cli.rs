@@ -1,6 +1,7 @@
-use crate::{cmd_config, cmd_local, cmd_s3};
+use crate::{cmd_config, cmd_local, cmd_s3, cmd_sftp, config};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
+use colored::Colorize;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use std::thread;
@@ -18,7 +19,8 @@ struct Args {
     #[arg(required = true)]
     source: Vec<String>,
 
-    /// Destination directory (local path or remote:bucket/prefix)
+    /// Destination directory: a local path, <remote>:<bucket>/<prefix> for a
+    /// configured S3 remote, or <host>:<path> for SFTP over ssh
     #[arg(required = true)]
     destination: Option<String>,
 
@@ -103,40 +105,38 @@ fn parse_parallel(s: &str) -> Result<usize, String> {
 pub enum Destination {
     /// A regular local filesystem path.
     Local(std::path::PathBuf),
-    /// An S3 remote: `remote_name:bucket/prefix`.
-    S3 {
-        remote_name: String,
-        bucket: String,
-        /// Key prefix within the bucket (may be empty).
-        prefix: String,
-    },
+    /// `name:path`. `name` is a configured remote (S3), or otherwise an SSH
+    /// host as understood by `ssh` (an alias from `~/.ssh/config` or
+    /// `user@host`).
+    Remote { name: String, path: String },
 }
 
-/// Parses a destination string, distinguishing `remote:bucket/prefix` from a
-/// plain local path.
+/// Parses a destination string, distinguishing `name:path` from a plain
+/// local path.
 pub fn parse_destination(dest: &str) -> Destination {
-    if let Some(colon_pos) = dest.find(':') {
-        let name = &dest[..colon_pos];
+    if let Some((name, path)) = dest.split_once(':') {
         // A remote name must be at least 2 characters and must not contain
         // path separators. The 2-char minimum disambiguates remotes from
-        // Windows drive letters like `C:\path`.
-        if name.len() >= 2 && !name.contains('/') && !name.contains('\\') {
-            let rest = &dest[colon_pos + 1..];
-            // Split rest into bucket + optional prefix.
-            let (bucket, prefix) = match rest.find('/') {
-                Some(slash) => (rest[..slash].to_string(), rest[slash + 1..].to_string()),
-                None => (rest.to_string(), String::new()),
+        // Windows drive letters like `C:\path`. A path starting with `//`
+        // is a URL (`http://...`), not a remote.
+        if name.len() >= 2 && !name.contains('/') && !name.contains('\\') && !path.starts_with("//") {
+            return Destination::Remote {
+                name: name.to_string(),
+                path: path.to_string(),
             };
-            if !bucket.is_empty() {
-                return Destination::S3 {
-                    remote_name: name.to_string(),
-                    bucket,
-                    prefix,
-                };
-            }
         }
     }
     Destination::Local(std::path::PathBuf::from(dest))
+}
+
+/// Splits an S3 remote path into its bucket and key prefix. Returns `None`
+/// when the bucket is missing.
+pub fn split_bucket(path: &str) -> Option<(String, String)> {
+    let (bucket, prefix) = path.split_once('/').unwrap_or((path, ""));
+    if bucket.is_empty() {
+        return None;
+    }
+    Some((bucket.to_string(), prefix.to_string()))
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -175,28 +175,47 @@ pub async fn run() {
 
     match parse_destination(&destination) {
         Destination::Local(dest_path) => {
-            // Local copies are bounded by the machine; uploads are bounded by
-            // the network, so S3 uses the requested level as-is.
+            // Local copies are bounded by the machine.
             let parallel = args.parallel.clamp(1, max);
             log::debug!("Using parallel level: {}", parallel);
             cmd_local::run(args.source, dest_path, args.recursive, args.sync, parallel, multi).await;
         }
-        Destination::S3 {
-            remote_name,
-            bucket,
-            prefix,
-        } => {
+        Destination::Remote { name, path } => {
+            // Uploads are bounded by the network, not the CPU count.
             log::debug!("Using parallel level: {}", args.parallel);
-            cmd_s3::run(
-                args.source,
-                remote_name,
-                bucket,
-                prefix,
-                args.recursive,
-                args.parallel,
-                multi,
-            )
-            .await;
+            let cfg = match config::load_config() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{} {}", "Failed to load configuration:".red(), e);
+                    std::process::exit(1);
+                }
+            };
+            match config::get_remote(&cfg, &name) {
+                Some(remote) => {
+                    let Some((bucket, prefix)) = split_bucket(&path) else {
+                        eprintln!(
+                            "{} {}",
+                            "S3 destinations need a bucket:".red(),
+                            format!("{name}:<bucket>/<prefix>").red()
+                        );
+                        std::process::exit(1);
+                    };
+                    cmd_s3::run(
+                        args.source,
+                        remote.clone(),
+                        bucket,
+                        prefix,
+                        args.recursive,
+                        args.parallel,
+                        multi,
+                    )
+                    .await;
+                }
+                None => {
+                    log::debug!("No remote named {name:?}; using SFTP over ssh");
+                    cmd_sftp::run(args.source, name, path, args.recursive, args.parallel, multi).await;
+                }
+            }
         }
     }
 }

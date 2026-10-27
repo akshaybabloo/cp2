@@ -16,9 +16,10 @@ indicatif = { version = "0.18.0", features = ["tokio"] }
 indicatif-log-bridge = "0.2.3"
 log = "0.4.28"
 rpassword = "7"
+russh-sftp = "3.0.1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
-tokio = { version = "1.47.1", features = ["fs", "rt-multi-thread", "sync", "rt", "macros"] }
+tokio = { version = "1.47.1", features = ["fs", "io-util", "process", "rt-multi-thread", "sync", "rt", "macros", "time"] }
 
 [dev-dependencies]
 assert_cmd = "2.0.17"
